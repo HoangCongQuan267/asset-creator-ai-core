@@ -36,11 +36,15 @@ To ensure high-quality results, the system expects structured input rather than 
 
 ## 🏗 Architecture Overview
 
-The pipeline operates as a directed acyclic graph (DAG), where the output of one service feeds into the next.
+The pipeline operates as a directed acyclic graph (DAG), starting from the **Studio UI** which injects creative context.
 
 ```mermaid
 graph TD
-    User[User Input (JSON)] --> Validation[Input Validator]
+    subgraph "Frontend Layer"
+        UI[Studio UI (Next.js)] -->|Project Context + User Input| API[API Gateway]
+    end
+
+    API --> Validation[Input Validator]
     Validation --> Service1[Text-to-Image Service]
 
     subgraph "Quality Enhancement Loop"
@@ -61,8 +65,9 @@ graph TD
         Service6 --> Export3D[Export (FBX/GLTF)]
     end
 
-    Export2D --> GameEngine[Game Engine (Unity/Unreal/Godot)]
-    Export3D --> GameEngine
+    Export2D --> CDN[CloudFront CDN]
+    Export3D --> CDN
+    CDN --> UI
 ```
 
 ---
@@ -90,6 +95,13 @@ To bridge the gap between "AI generated" and "Production Ready", we inject speci
 ---
 
 ## 🔗 Service Integration
+
+### 0. [Studio UI (Creative Context)](../ui/README.md)
+
+_The Driver_
+
+- **Role**: Captures "Style DNA" and "World Context" to guide generation.
+- **Output**: JSON Payload with prompt + style embeddings + constraints.
 
 ### 1. [Text-to-Image Service](../text-to-image-service/README.md)
 
