@@ -1,6 +1,60 @@
 # Asset Creator AI Core
 
-**Asset Creator AI Core** is a modular, end-to-end generative AI pipeline designed to transform simple text prompts into production-ready game assets.
+**Asset Creator AI Core** is more than just an asset generator—it is a **Game Project Creator**.
+
+Instead of asking for a single asset ("a sword"), the user describes a **Game Idea** ("a dark fantasy RPG set in a cursed forest"). The system analyzes the idea, breaks it down into required assets, structures the game project folders (Unity/Unreal), and orchestrates the creation of every element needed to build the game.
+
+## 🧠 Core Workflow: Idea to Project
+
+### 1. Game Design Analysis (LLM Agent)
+
+**Input**: User Prompt (e.g., _"Make a 2D side-scroller about a cyber-ninja fighting robots in Neo-Tokyo"_).
+**Process**:
+
+- **Decomposition**: Identifies necessary components (Player Character, Enemy Types, Bosses, Tilesets, Backgrounds, UI Elements, Audio).
+- **Style Definition**: Establishes a visual consistency guide (Palette, Lighting, Art Style) to ensure all assets look like they belong in the same game.
+- **Output**: `GameDesignSpec.json`
+
+### 2. Project Scaffolding
+
+**Action**: Creates the directory structure for the target engine (Unity, Unreal, Godot).
+**Structure Example (Unity)**:
+
+```text
+MyGameProject/
+├── Assets/
+│   ├── _Project/
+│   │   ├── Characters/
+│   │   │   ├── Player_Ninja/      <-- Target for Asset Pipeline
+│   │   │   ├── Enemy_RobotGrunt/
+│   │   ├── Environment/
+│   │   │   ├── NeoTokyo_Streets/
+│   │   ├── Props/
+│   │   ├── UI/
+│   ├── Scenes/
+│   │   ├── Level1.unity
+```
+
+### 3. Asset Batch Orchestration
+
+**Action**: Generates a bulk job list for the [Pipeline Orchestrator](./pipeline/README.md).
+
+- Instead of 1 job, it dispatches 50 parallel jobs (1 Player, 5 Enemies, 20 Props, 3 Backgrounds).
+- Passes the **Style Guide** context to every job to maintain consistency.
+
+---
+
+## 🏆 Key Market Advantages
+
+Why this solution is positioned to lead the market:
+
+1.  **True "Game-Ready" Output**: Unlike competitors that stop at raw meshes, this pipeline handles **Retopology, UV Unwrapping, LOD Generation, and Rigging** automatically. Assets drop directly into Unity/Unreal without manual cleanup.
+2.  **Unbeatable Economics**:
+    - **98%+ Gross Margins**: Optimized AWS Spot architecture and Vietnam-based operations keep COGS near zero (~$0.03 per 3D character).
+    - **Competitive Pricing**: Offers indie-friendly rates ($1.50/character) that undercut manual outsourcing (hundreds of dollars) and expensive enterprise tools.
+3.  **Global Scale from Day 1**:
+    - **Multi-Region Delivery**: Architected for low-latency access in USA, EU, and China (via cross-border optimization).
+    - **Enterprise & Indie Ready**: From single-asset pay-as-you-go to high-volume Studio subscriptions.
 
 It supports two primary workflows:
 
@@ -77,6 +131,7 @@ The repository is organized into specialized micro-services, each handling a spe
 ## 💵 Pricing & Margin
 
 ### Assumptions (COGS Inputs)
+
 - **GPU (Spot) G4dn.xlarge**: ~$0.0026/min
 - **GPU (On-Demand) G4dn.xlarge**: ~$0.0088/min
 - **CDN Egress**: ~$0.09/GB (typical CloudFront)
@@ -86,6 +141,7 @@ The repository is organized into specialized micro-services, each handling a spe
   - Background/VFX Pack: 20–100 MB
 
 ### COGS Per Asset (Spot)
+
 - **2D Sprite**:
   - Compute: SDXL + Refine ~ 13 s → ~$0.0006
   - Egress: 10 MB → ~$0.0009
@@ -101,28 +157,33 @@ The repository is organized into specialized micro-services, each handling a spe
   - Total COGS: ~$0.006–$0.010
 
 ### Suggested Retail Pricing (Pay‑As‑You‑Go)
+
 - **2D Sprite / Sheet**: $0.25
 - **3D Character (Model + Rig)**: $1.50
 - **Background / Environment**: $0.75
 - **VFX Pack (Sprites/Clips)**: $0.75
 
 ### Target Gross Margins (Spot)
+
 - **2D**: ~99% margin ($0.25 price vs ~$0.003 COGS)
 - **3D Character**: ~98% margin ($1.50 price vs ~$0.030 COGS)
 - **Background/VFX**: ~98–99% margin
 - On-Demand GPUs reduce margins by ~1–2% on busy periods; egress remains dominant cost for large assets.
 
 ### Subscription Tiers
+
 - **Starter**: $29/month, 100 assets (effective ~$0.29/asset)
 - **Studio**: $199/month, 1,000 assets (effective ~$0.20/asset)
 - **Pro**: $499/month, 3,000 assets (effective ~$0.17/asset)
 - **Enterprise**: Custom; dedicated GPUs, data residency, SSO, SLA
 
 ### Pricing Formula
+
 - **COGS** = GPU_minutes × GPU_rate + Egress_GB × Egress_rate + Storage/Requests (minor)
 - **Margin %** = (Price − COGS) ÷ Price
 - **Recommended**: Price = COGS × 10–50× depending on asset type and SLA
 
 ### Notes
+
 - Egress is often the largest driver for big 3D assets; prefer KTX2 textures and Draco compression.
 - Spot GPUs keep compute costs low; maintain small On‑Demand baseline to minimize cold starts.

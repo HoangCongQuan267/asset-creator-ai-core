@@ -154,34 +154,39 @@ This document outlines the product roadmap and a practical path to enter oversea
 
 ## Competitor Analysis
 
-- Landscape
-  - 2D Generation: MidJourney, Stable Diffusion (ComfyUI/Automatic1111), Adobe Firefly
-  - 3D Generation: Luma AI, Meshy, Kaedim, TripoSR/Rodin, Gaussian Splatting toolchains
-  - Pipelines/Assets: Ready Player Me, Sloyd, CGTrader/TurboSquid libraries
-  - Scanning: Polycam, RealityCapture; strong for photogrammetry but not auto‑retopo/rig/export
-- Observed Gaps
-  - Few deliver end‑to‑end from prompt to engine‑ready assets with consistent topology, UVs, LODs, rigging, and export
-  - Limited batch/API workflows, job orchestration, and project‑level asset libraries
-  - Weak guarantees on PBR material compliance and game engine import friction
-  - Opaque or high pricing for enterprise; limited indie‑friendly per‑asset models
-- Differentiation
-  - End‑to‑end pipeline with human‑in‑the‑loop review gates and deterministic export presets
-  - Clean topology, UV unwrap, texture baking, LOD generation, rig presets aligned to Unity/Unreal
-  - Engine‑ready formats (FBX/GLB), texture compression (KTX2), geometry compression (Draco), signed CDN delivery
-  - Batch/API first with per‑project namespaces, metrics, and audit; regional delivery readiness (USA/EU/China)
-  - Vietnam‑based pricing advantages and transparent per‑asset credit bundles
-- Notable Competitors
-  - MidJourney: best‑in‑class 2D; no 3D or game‑ready export; complementary for concepting
-  - Luma AI: strong reconstruction; limited topology/LOD/export control for games
-  - Meshy: text‑to‑3D; pipeline coverage improving but retopo/rig/export consistency varies
-  - Kaedim: image‑to‑3D with retopo; more manual/higher pricing; enterprise focus
-  - Ready Player Me: avatar domain; excellent engine integrations; narrow asset category
-  - Sloyd: parametric low‑poly; fast but not generative and limited versatility
-  - Adobe Firefly: rich 2D ecosystem; lacks automated 3D pipeline to game‑ready output
--
+| Competitor Category | Key Players                                 | Strengths                                                   | Our Gaps / Weaknesses                                                                    | **Our Winning Edge (Differentiation)**                                                                                 |
+| :------------------ | :------------------------------------------ | :---------------------------------------------------------- | :--------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
+| **2D Gen AI**       | MidJourney, Stable Diffusion, Adobe Firefly | High artistic quality, massive datasets, brand recognition. | We rely on open models (SDXL/Kandinsky) which may lag slightly in "raw art" consistency. | **Game-Ready Pipeline**: We don't just make images; we make sprites, spines, and textures ready for engines.           |
+| **3D Gen AI**       | Luma AI, Meshy, CSM, TripoSR                | Fast mesh generation, strong reconstruction from video.     | Some have better "text-to-mesh" fidelity in isolation.                                   | **Topology & Rigging**: They output messy meshes. We output **retopologized, UV-mapped, rigged characters** with LODs. |
+| **Asset Stores**    | Unity Asset Store, TurboSquid, Sketchfab    | Massive library of human-made assets, verified quality.     | Instant availability (no generation wait time).                                          | **Customizability & Cost**: We allow _infinite_ variations for $1.50 vs $30-$100 for a static asset.                   |
+| **Avatar Systems**  | Ready Player Me, VRoid                      | Perfect rigging, high quality anime/stylized avatars.       | They are specialized in avatars only; hard to break their specific style.                | **Versatility**: We handle props, environments, monsters, and distinct styles, not just one avatar type.               |
 
-### Competitive Implications
+### Strategic Implications
 
-- Emphasize consistent game‑ready outputs (topology/UV/LOD/rig/export) and batch/API workflows
-- Ship Unity/Unreal guides and sample scenes to reduce import friction
-- Lead with per‑asset pricing for indies; offer enterprise pilots with SSO/SLA and cross‑border delivery
+1.  **Don't Fight on "Art Quality" Alone**: MidJourney wins on pure pixels. We win on **"Usability"**.
+2.  **Own the "Technical Artist" Pipeline**: Focus on the boring stuff that saves time—UVs, Rigging, LODs, Export formats.
+3.  **Price for Volume**: Competitors charge high subscriptions ($30+/mo). We capture the long tail with pay-as-you-go and low-cost bundles.
+4.  **Ship Unity/Unreal Guides**: Reduce import friction to zero.
+
+### Detailed Landscape
+
+- **2D Generation**: MidJourney, Stable Diffusion (ComfyUI/Automatic1111), Adobe Firefly
+- **3D Generation**: Luma AI, Meshy, Kaedim, TripoSR/Rodin, Gaussian Splatting toolchains
+- **Pipelines/Assets**: Ready Player Me, Sloyd, CGTrader/TurboSquid libraries
+- **Scanning**: Polycam, RealityCapture; strong for photogrammetry but not auto‑retopo/rig/export
+
+### Observed Gaps
+
+- Few deliver end‑to‑end from prompt to engine‑ready assets with consistent topology, UVs, LODs, rigging, and export
+- Limited batch/API workflows, job orchestration, and project‑level asset libraries
+- Weak guarantees on PBR material compliance and game engine import friction
+- Opaque or high pricing for enterprise; limited indie‑friendly per‑asset models
+
+### Notable Competitors
+
+- **MidJourney**: best‑in‑class 2D; no 3D or game‑ready export; complementary for concepting
+- **Luma AI**: strong reconstruction; limited topology/LOD/export control for games
+- **Meshy**: text‑to‑3D; pipeline coverage improving but retopo/rig/export consistency varies
+- **Kaedim**: image‑to‑3D with retopo; more manual/higher pricing; enterprise focus
+- **Ready Player Me**: avatar domain; excellent engine integrations; narrow asset category
+- **Sloyd**: parametric low‑poly; fast but not generative and limited versatility
