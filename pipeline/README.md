@@ -36,7 +36,7 @@ To ensure high-quality results, the system expects structured input rather than 
 
 ## 🏗 Architecture Overview
 
-The pipeline operates as a directed acyclic graph (DAG), starting from the **Studio UI** which injects creative context. It includes **Caching**, **Safety Checks**, and **Human-in-the-Loop** checkpoints.
+The pipeline operates as a directed acyclic graph (DAG), starting from the **Studio UI** and flowing through the **Backend Orchestrator** which retrieves project data from the database and applies business logic. It includes **Safety Checks** and **Human-in-the-Loop** checkpoints. All requests generate new assets; previously created assets are retrieved from the **Asset Library** and do not re-enter the pipeline. Every major step persists status and metadata to the user's database.
 
 ```mermaid
 graph TD
@@ -44,10 +44,10 @@ graph TD
         UI[Studio UI (Next.js)] -->|Project Context + User Input| API[API Gateway]
     end
 
-    API --> Auth[Auth & Quota Check]
-    Auth --> Cache{Cache Hit?}
-    Cache -->|Yes| CDN
-    Cache -->|No| Safety[NSFW / Safety Filter]
+    API --> Backend[Backend Orchestrator]
+    Backend --> DB[(User Database)]
+    Backend --> Auth[Auth & Quota Check]
+    Auth --> Safety[NSFW / Safety Filter]
 
     Safety --> Service1[Text-to-Image Service]
 
@@ -59,6 +59,10 @@ graph TD
     Refine --> Review1{User Review?}
     Review1 -->|Approve| Branching
     Review1 -->|Reject| Service1
+    Backend -->|Persist Step| DB
+    Service1 -->|Status + Artifacts| DB
+    Refine -->|Status + Artifacts| DB
+    Review1 -->|Decision| DB
 
     subgraph "Branching Logic"
         Branching -->|2D| Service2[Image-to-2D-Assets]
@@ -67,16 +71,30 @@ graph TD
 
     subgraph "3D Pipeline"
         Service3 --> Service4[Retopology & Remeshing]
-        Service4 --> Service5[Rigging Service]
-        Service5 --> Service6[3D Animation Generation]
-        Service6 --> Export3D[Export (FBX/GLTF)]
+        Service4 --> Review2{Approve Retopo?}
+        Review2 -->|Approve| Service5[Rigging Service]
+        Review2 -->|Edit| Service4
+        Service5 --> Review3{Approve Rig?}
+        Review3 -->|Approve| Service6[3D Animation Generation]
+        Review3 -->|Edit| Service5
+        Service6 --> Review4{Approve Anim?}
+        Review4 -->|Approve| Export3D[Export (FBX/GLTF)]
+        Review4 -->|Edit| Service6
     end
 
     Service2 --> Export2D[Export (Sprite/JSON)]
 
-    Export2D --> CDN[CloudFront CDN]
-    Export3D --> CDN
+    Export2D --> Library[Asset Library (Versioned)]
+    Export3D --> Library
+    Library --> CDN[CloudFront CDN]
     CDN --> UI
+    UI -->|Browse / Re-use| Library
+    Service3 -->|Status + Artifacts| DB
+    Service4 -->|Status + Mesh| DB
+    Service5 -->|Status + Rig| DB
+    Service6 -->|Status + Anim| DB
+    Export2D -->|Index + Metadata| DB
+    Export3D -->|Index + Metadata| DB
 ```
 
 ---
@@ -89,9 +107,13 @@ To make this system robust for thousands of users, we integrate the following la
 
 - **Content Moderation**: Before any generation, prompts are checked against a safety list. Generated images are scanned for NSFW content using a lightweight classifier.
 - **Circuit Breakers**: If a service (e.g., TripoSR) fails > 5 times in 1 minute, the system temporarily switches to a fallback model (e.g., Zero123++) or queues requests.
-- **Smart Caching**:
-  - Inputs are hashed (Prompt + Style + Seed).
-  - If a user requests a duplicate generation, the asset is served instantly from S3/CDN.
+
+### Asset Library & Versioning
+
+- **Always-Generate Policy**: Each pipeline request produces a new asset version; no generation is skipped.
+- **Library Retrieval**: Old assets are browsed and reused directly from the library; they do not re-enter the pipeline.
+- **Version Key**: `project_id + asset_type + timestamp + model_version + pipeline_flags`.
+- **Access & Delivery**: Private per-project namespaces; delivered via signed URLs and CDN.
 
 ### 2. Human-in-the-Loop (HITL)
 
@@ -99,6 +121,50 @@ AI is not perfect. The pipeline supports **"Pause & Edit"** states:
 
 - **Checkpoint A (Image)**: User can paint over the generated 2D image before it goes to 3D.
 - **Checkpoint B (Mesh)**: User can download the `.obj`, fix topology in Blender manually, and re-upload to continue Rigging.
+
+### 4. State Model & Transitions
+
+- **Job Status**: pending → running → paused → approved/rejected → done/failed.
+- **Step Status**: pending → running → paused → approved/rejected → done/failed.
+- **Transitions**:
+  - Backend sets step=pending → running on dispatch.
+  - On completion, worker emits done/failed; backend persists and advances.
+  - User reviews set approved/rejected; approved advances, rejected rewinds/edits.
+- **Idempotency**: Steps use idempotency keys to avoid duplicate execution on retries.
+
+### 5. Events & Idempotency
+
+- **Events**: StepStarted, StepCompleted, StepFailed, UserReviewUpdated, AssetIndexed.
+- **Outbox Pattern**: Backend writes DB + event atomically; event bus (e.g., EventBridge) delivers to subscribers.
+- **Correlation IDs**: job_id and step_id propagate across services for tracing.
+- **Idempotency Keys**: hash(project_id, asset_type, step_name, inputs, seed, model_version).
+
+### 6. Error Handling & Retry
+
+- **Retries**: Exponential backoff with jitter; cap attempts; annotate error causes.
+- **DLQ**: Unrecoverable jobs routed to Dead Letter Queue for manual inspection.
+- **Circuit Breakers**: Trip on consecutive failures; route to fallback model or pause pipeline.
+- **Resume/Rewind**: Resume failed step or rewind to previous approved step based on user decision.
+
+### 7. Observability
+
+- **Metrics**: per-step latency, GPU utilization, cost estimate, success rate.
+- **Tracing**: distributed traces across Backend → Workers → Storage.
+- **Logs**: structured logs with correlation IDs; searchable by job_id.
+- **Audit Trail**: user decisions and asset lineage recorded in DB.
+
+### 8. Access Control & Privacy
+
+- **Namespaces**: per-project isolation for storage and DB records.
+- **RBAC**: roles for viewer/editor/admin; enforce on endpoints and assets.
+- **Signed URLs**: time-limited access for private artifacts.
+- **PII Minimization**: store only necessary user metadata.
+
+### 9. Multi-Tenancy & Quotas
+
+- **Per-Project Quotas**: concurrent jobs, GPU hours, storage caps.
+- **Fair Scheduling**: queue prioritization to prevent starvation.
+- **Burst Control**: throttle spikes; inform users with ETA.
 
 ---
 

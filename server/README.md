@@ -4,41 +4,68 @@ This document outlines the infrastructure design for deploying the Asset Creator
 
 ## 🏗 Architecture Diagram
 
-The system uses an **Event-Driven Architecture** to handle long-running generative tasks (3D generation, Rigging) asynchronously.
+This design aligns with the updated pipeline and backend orchestration.
 
 ```mermaid
 graph TD
     User[User / Game Client] -->|HTTPS Request| API[API Gateway]
-    API -->|Trigger| Lambda[Orchestrator Lambda]
+    API --> Backend[Backend Orchestrator: Lambda & Fargate]
+    Backend --> DB[(DynamoDB / Postgres)]
+    Backend --> Auth[Auth & Quotas]
+    Backend --> Safety[Safety Policies]
+    Backend --> Outbox[Event Outbox]
 
-    subgraph "Queue System"
-        Lambda -->|Push Job| SQS_GEN[SQS: Generation Queue]
-        Lambda -->|Push Job| SQS_RIG[SQS: Rigging Queue]
+    subgraph "Step Queues"
+        Backend --> Q_TTI[SQS: Text-to-Image]
+        Backend --> Q_REFINE[SQS: Refine/Upscale]
+        Backend --> Q_3D[SQS: Image-to-3D]
+        Backend --> Q_RETOPO[SQS: Retopology]
+        Backend --> Q_RIG[SQS: Rigging]
+        Backend --> Q_ANIM[SQS: Animation]
+        Backend --> Q_EXPORT[SQS: Export]
     end
 
-    subgraph "Auto-Scaling GPU Cluster (ECS/EKS or Batch)"
-        SQS_GEN -->|Pull| Worker_Gen[G4dn Workers (SDXL / TripoSR)]
-        SQS_RIG -->|Pull| Worker_Rig[G4dn Workers (RigNet / Blender)]
+    subgraph "GPU Workers - ECS/EKS ASG G4dn"
+        Q_TTI --> W_TTI[SDXL Workers]
+        Q_3D --> W_3D[TripoSR + Zero123++ Workers]
+        Q_RIG --> W_RIG[RigNet Workers]
+        Q_ANIM --> W_ANIM[Motion Gen Workers]
     end
 
-    Worker_Gen -->|Save Asset| S3[S3 Bucket: Assets]
-    Worker_Rig -->|Save Asset| S3
+    subgraph "CPU Workers - ECS/Fargate ASG"
+        Q_REFINE --> W_REFINE[Upscale + Img2Img]
+        Q_RETOPO --> W_RETOPO[Blender Retopo]
+        Q_EXPORT --> W_EXPORT[Blender Export]
+    end
 
-    S3 -->|Notify| EventBridge
-    EventBridge -->|Update Status| DB[(DynamoDB: Job Status)]
+    W_TTI --> S3[S3 / Blob Storage]
+    W_3D --> S3
+    W_RIG --> S3
+    W_ANIM --> S3
+    W_REFINE --> S3
+    W_RETOPO --> S3
+    W_EXPORT --> S3
 
-    User <-->|Poll Status / Get URL| API
+    S3 --> CDN[CloudFront CDN]
+    S3 --> EventBridge[EventBridge]
+    EventBridge --> Backend
+    Backend --> DB
+    Backend --> Index[Asset Library Index]
+    Index --> DB
+
+    User <-->|Poll Status / Browse Assets| API
+    API --> CDN
 ```
 
 ### Key Components
 
-1.  **API Gateway + Lambda**: Stateless entry point. Very cheap, scales infinitely.
-2.  **Amazon SQS**: Buffers requests. If 10,000 users click "Generate" at once, SQS holds the jobs so the servers don't crash.
-3.  **Auto Scaling Group (ASG) of G4dn Instances**:
-    - **Scale Out**: Triggered when `ApproximateNumberOfMessagesVisible` in SQS > 0.
-    - **Scale In**: Triggered when queue is empty.
-    - **Spot Instances**: Use Spot instances for ~70% cost savings on stateless workers.
-4.  **S3**: Durable storage for generated images and models.
+1.  **API Gateway + Backend Orchestrator (Lambda/Fargate)**: Entry layer; retrieves project data, enforces policies, creates jobs, persists state, and routes to step queues.
+2.  **Per-Step SQS Queues**: Isolate workloads and scale granularly (TTI, Refine, 3D, Retopo, Rig, Anim, Export).
+3.  **GPU ASG (G4dn)**: Runs SDXL, TripoSR, RigNet, Motion; Spot for burst, On-Demand baseline to reduce cold starts.
+4.  **CPU ASG / Fargate**: Runs Upscale/Img2Img, Retopo, Export; cheaper compute for CPU-heavy steps.
+5.  **S3 + CloudFront**: Artifact storage and global delivery; versioned library paths and signed URLs.
+6.  **EventBridge + Outbox**: Event bus for step completion; outbox ensures atomic DB + event publishing.
+7.  **DB (DynamoDB/Postgres)**: Job, Step, Asset records; audit trail, metrics, lineage.
 
 ---
 
@@ -62,15 +89,15 @@ _Estimates based on typical inference times._
 
 1.  **Text → Image (SDXL)**: ~10 seconds
 2.  **Image → 3D (TripoSR)**: ~15 seconds
-3.  **Retopology (Blender)**: ~60 seconds (CPU heavy, but running on GPU node for simplicity)
+3.  **Retopology (Blender)**: ~60 seconds (runs on CPU ASG/Fargate)
 4.  **Rigging (RigNet)**: ~45 seconds
 5.  **Overhead (Loading models/Boot)**: ~30 seconds
 
 **Total Time**: ~160 seconds (2.67 minutes)
 
-**Cost per Character (Spot Price):**
-$$ 2.67 \text{ min} \times \$0.0026 \approx \mathbf{\$0.007} $$
-_(Less than 1 cent per character)_
+**Cost per Character (Spot Price, GPU time only):**
+$$ (10 + 15 + 45) \text{ s} \times \$0.0026/\text{min} \approx \mathbf{\$0.004} $$
+**CPU time** (Retopo/Export): negligible cost on Fargate/ASG at scale; storage/egress dominates for large assets.
 
 **Cost per Character (On-Demand):**
 $$ 2.67 \text{ min} \times \$0.0088 \approx \mathbf{\$0.023} $$
@@ -95,12 +122,12 @@ Before any users arrive, you pay for the baseline infrastructure.
 
 To handle "large user base" spikes:
 
-1.  **Metric**: CloudWatch Alarm on SQS Queue Depth.
-    - _Alarm High_: `Messages > 10` → Add 1 Instance.
-    - _Alarm Low_: `Messages == 0` for 5 mins → Remove 1 Instance.
-2.  **Capacity Provider**: Mix **On-Demand** (Base capacity) and **Spot** (Burst capacity).
-    - _Base_: 1 On-Demand instance (Always on to reduce cold start).
-    - _Burst_: Up to 100+ Spot instances.
+1.  **Metrics**: CloudWatch Alarms per step queue depth; scale corresponding worker pools independently.
+2.  **Capacity Providers**:
+    - **GPU**: Base 1–2 On-Demand; Burst via Spot (target tracking on queue depth).
+    - **CPU**: Scale via Fargate or CPU ASG; target tracking on queue depth and CPU.
+3.  **Warm Pools & AMI Baking**: Pre-baked GPU AMIs; warm pools for near-instant capacity.
+4.  **Step Prioritization**: Interactive steps (TTI/Refine) prioritized over batch (Anim) to improve UX.
 
 ### Cold Start Mitigation (Critical for Production)
 
@@ -157,33 +184,67 @@ Users care about how fast they can **view/download** the result.
 
 ### 3. Architecture Update for Global Reach
 
-```mermaid
-graph TD
-    User["User / Game Client"] -->|HTTPS Request| API["API Gateway"]
-    API -->|Trigger| Lambda["Orchestrator Lambda"]
-
-    subgraph "Queue System"
-        Lambda -->|Push Job| SQS_GEN["SQS: Generation Queue"]
-        Lambda -->|Push Job| SQS_RIG["SQS: Rigging Queue"]
-    end
-
-    subgraph "Auto-Scaling GPU Cluster (ECS/EKS or Batch)"
-        SQS_GEN -->|Pull| Worker_Gen["G4dn Workers (SDXL / TripoSR)"]
-        SQS_RIG -->|Pull| Worker_Rig["G4dn Workers (RigNet / Blender)"]
-    end
-
-    Worker_Gen -->|Save Asset| S3["S3 Bucket: Assets"]
-    Worker_Rig -->|Save Asset| S3
-
-    S3 -->|Notify| EventBridge["EventBridge"]
-    EventBridge -->|Update Status| DB[("DynamoDB: Job Status")]
-
-    User <-->|Poll Status / Get URL| API
-```
+Use single-region GPU hub with global CDN; backend remains centralized; assets delivered from nearest edge.
 
 ## 🚀 Deployment Checklist
 
 1.  [ ] **Dockerize Services**: Create Dockerfiles for each service folder (`text-to-image-service`, `rigging-service`, etc.).
 2.  [ ] **Build & Push to ECR**: Push images to Amazon Elastic Container Registry.
-3.  [ ] **Define Infrastructure (Terraform/CDK)**: Script the VPC, SQS, and ASG.
-4.  [ ] **Configure User Data**: Script EC2 boot to pull from SQS and run the Docker container.
+3.  [ ] **Define Infrastructure (Terraform/CDK)**: VPC, step SQS queues, GPU/CPU ASGs/Fargate, EventBridge, DB, CloudFront.
+4.  [ ] **Configure User Data**: GPU AMI baking, warm pools; worker boot scripts to subscribe to step-specific queues.
+
+---
+
+## ⏱ Latency Per Step & Optimization
+
+### Typical Latency (Interactive Path)
+
+- **Backend Orchestrator**: 50–150 ms (auth, quotas, DB fetch, safety)
+- **Text → Image (SDXL, GPU)**: 6–12 s
+- **Refine/Upscale (CPU/GPU)**: 2–6 s (2×; tile-based can add 1–2 s)
+- **Image → 3D (TripoSR, GPU)**: 12–20 s
+- **Retopology (Blender, CPU)**: 45–90 s (mesh size dependent)
+- **Rigging (RigNet, GPU)**: 30–60 s
+- **Animation (MDM/MoDi, GPU)**: 20–40 s (clip length/fps dependent)
+- **Export (Blender, CPU)**: 5–15 s
+- **Index + CDN**: 0.5–2 s (S3 put + metadata write; download latency depends on asset size)
+
+### Queue Wait (Variable)
+
+- **Goal**: <2 s for interactive steps (TTI/Refine); <10–30 s for batch steps (Anim).
+- **Tactics**: priority queues, target tracking on depth, reserve baseline GPU capacity.
+
+### Optimization Playbook
+
+- **Boot & Model Load**
+  - AMI baking with preinstalled drivers and cached weights
+  - Warm pools to avoid cold boot; keep 1–2 baseline GPUs online
+  - Persistent workers with pinned models to skip reload between jobs
+- **Inference**
+  - Mixed precision (fp16) on T4; TensorRT for supported models
+  - Smaller resolutions on first pass; staged upscale only if approved
+  - Deterministic seeds for reproducibility; skip unnecessary reruns
+- **3D Pipeline**
+  - Enforce symmetry before rigging; reduces rigging time/failures
+  - Use Instant Meshes for fast retopo on high-poly assets
+  - Draco/KTX2 compression for GLB/textures to cut transfer time
+- **System**
+  - Per-step queues; interactive steps prioritized
+  - Parallelize CPU tasks (retopo/export) while GPU runs next steps
+  - Outbox events + idempotency to avoid duplicate work on retries
+
+### Overseas Latency
+
+- **API Path**: add Global Accelerator or edge‑optimized API Gateway (20–80 ms improvement)
+- **Asset Delivery**: CloudFront serves from nearest edge; large assets benefit 5–10× vs origin
+- **Compute**: single-region GPU adds ~100–200 ms RTT, negligible relative to 20–120 s compute
+
+### SLO Targets (Recommended)
+
+- **TTI**: P50 8 s, P95 12 s
+- **Refine**: P50 3 s, P95 6 s
+- **3D**: P50 15 s, P95 22 s
+- **Retopo**: P50 60 s, P95 90 s
+- **Rig**: P50 40 s, P95 60 s
+- **Anim**: P50 30 s, P95 45 s
+- **Export**: P50 10 s, P95 15 s
