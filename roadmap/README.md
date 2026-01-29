@@ -151,3 +151,37 @@ This document outlines the product roadmap and a practical path to enter oversea
 - USA: Stripe/Paddle, paid ads (limited), dev communities, marketplaces, outbound to small studios
 - EU: GDPR compliance messaging, VAT pricing clarity, localized pages, partner with EU accelerators
 - China: cross‑border enterprise pilots, local CDN partner, Mandarin landing page, WeChat/Alipay via partner
+
+## Competitor Analysis
+
+- Landscape
+  - 2D Generation: MidJourney, Stable Diffusion (ComfyUI/Automatic1111), Adobe Firefly
+  - 3D Generation: Luma AI, Meshy, Kaedim, TripoSR/Rodin, Gaussian Splatting toolchains
+  - Pipelines/Assets: Ready Player Me, Sloyd, CGTrader/TurboSquid libraries
+  - Scanning: Polycam, RealityCapture; strong for photogrammetry but not auto‑retopo/rig/export
+- Observed Gaps
+  - Few deliver end‑to‑end from prompt to engine‑ready assets with consistent topology, UVs, LODs, rigging, and export
+  - Limited batch/API workflows, job orchestration, and project‑level asset libraries
+  - Weak guarantees on PBR material compliance and game engine import friction
+  - Opaque or high pricing for enterprise; limited indie‑friendly per‑asset models
+- Differentiation
+  - End‑to‑end pipeline with human‑in‑the‑loop review gates and deterministic export presets
+  - Clean topology, UV unwrap, texture baking, LOD generation, rig presets aligned to Unity/Unreal
+  - Engine‑ready formats (FBX/GLB), texture compression (KTX2), geometry compression (Draco), signed CDN delivery
+  - Batch/API first with per‑project namespaces, metrics, and audit; regional delivery readiness (USA/EU/China)
+  - Vietnam‑based pricing advantages and transparent per‑asset credit bundles
+- Notable Competitors
+  - MidJourney: best‑in‑class 2D; no 3D or game‑ready export; complementary for concepting
+  - Luma AI: strong reconstruction; limited topology/LOD/export control for games
+  - Meshy: text‑to‑3D; pipeline coverage improving but retopo/rig/export consistency varies
+  - Kaedim: image‑to‑3D with retopo; more manual/higher pricing; enterprise focus
+  - Ready Player Me: avatar domain; excellent engine integrations; narrow asset category
+  - Sloyd: parametric low‑poly; fast but not generative and limited versatility
+  - Adobe Firefly: rich 2D ecosystem; lacks automated 3D pipeline to game‑ready output
+-
+
+### Competitive Implications
+
+- Emphasize consistent game‑ready outputs (topology/UV/LOD/rig/export) and batch/API workflows
+- Ship Unity/Unreal guides and sample scenes to reduce import friction
+- Lead with per‑asset pricing for indies; offer enterprise pilots with SSO/SLA and cross‑border delivery
