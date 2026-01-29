@@ -71,3 +71,58 @@ The repository is organized into specialized micro-services, each handling a spe
 1.  **Pick a Service**: Navigate to a service folder (e.g., `text-to-image-service`).
 2.  **Install Dependencies**: Follow the `README.md` inside that folder for environment-specific setup.
 3.  **Run Pipeline**: See `pipeline/README.md` for how to chain services together.
+
+---
+
+## 💵 Pricing & Margin
+
+### Assumptions (COGS Inputs)
+- **GPU (Spot) G4dn.xlarge**: ~$0.0026/min
+- **GPU (On-Demand) G4dn.xlarge**: ~$0.0088/min
+- **CDN Egress**: ~$0.09/GB (typical CloudFront)
+- **Asset Sizes**:
+  - 2D Sprite/Sheet: 5–20 MB
+  - 3D Character (GLB + Textures): 100–300 MB
+  - Background/VFX Pack: 20–100 MB
+
+### COGS Per Asset (Spot)
+- **2D Sprite**:
+  - Compute: SDXL + Refine ~ 13 s → ~$0.0006
+  - Egress: 10 MB → ~$0.0009
+  - Total COGS: ~$0.0015–$0.003
+- **3D Character (Full Pipeline)**:
+  - Compute (GPU): SDXL + TripoSR + RigNet ~ 70 s → ~$0.003–$0.004
+  - CPU (Retopo/Export): negligible at scale
+  - Egress: 200 MB → ~$0.018
+  - Total COGS: ~$0.022–$0.030
+- **Background / VFX Pack**:
+  - Compute: ~20–30 s → ~$0.001–$0.002
+  - Egress: 50 MB → ~$0.0045
+  - Total COGS: ~$0.006–$0.010
+
+### Suggested Retail Pricing (Pay‑As‑You‑Go)
+- **2D Sprite / Sheet**: $0.25
+- **3D Character (Model + Rig)**: $1.50
+- **Background / Environment**: $0.75
+- **VFX Pack (Sprites/Clips)**: $0.75
+
+### Target Gross Margins (Spot)
+- **2D**: ~99% margin ($0.25 price vs ~$0.003 COGS)
+- **3D Character**: ~98% margin ($1.50 price vs ~$0.030 COGS)
+- **Background/VFX**: ~98–99% margin
+- On-Demand GPUs reduce margins by ~1–2% on busy periods; egress remains dominant cost for large assets.
+
+### Subscription Tiers
+- **Starter**: $29/month, 100 assets (effective ~$0.29/asset)
+- **Studio**: $199/month, 1,000 assets (effective ~$0.20/asset)
+- **Pro**: $499/month, 3,000 assets (effective ~$0.17/asset)
+- **Enterprise**: Custom; dedicated GPUs, data residency, SSO, SLA
+
+### Pricing Formula
+- **COGS** = GPU_minutes × GPU_rate + Egress_GB × Egress_rate + Storage/Requests (minor)
+- **Margin %** = (Price − COGS) ÷ Price
+- **Recommended**: Price = COGS × 10–50× depending on asset type and SLA
+
+### Notes
+- Egress is often the largest driver for big 3D assets; prefer KTX2 textures and Draco compression.
+- Spot GPUs keep compute costs low; maintain small On‑Demand baseline to minimize cold starts.

@@ -4,16 +4,17 @@ This service handles the critical step of converting raw, high-poly meshes (from
 
 ## 🛠 Tools Overview
 
-| Tool | Use Case | Notes |
-|------|----------|-------|
-| **Blender (Python API)** | **Main Pipeline** | Scriptable headless automation |
-| **Instant Meshes** | Free Retopology | Good for organic shapes |
-| **OpenVDB** | Voxel Remesh | Robust for fixing holes/non-manifold geometry |
-| **Quad Remesher** | Optional | Paid plugin, currently skipped |
+| Tool                     | Use Case          | Notes                                         |
+| ------------------------ | ----------------- | --------------------------------------------- |
+| **Blender (Python API)** | **Main Pipeline** | Scriptable headless automation                |
+| **Instant Meshes**       | Free Retopology   | Good for organic shapes                       |
+| **OpenVDB**              | Voxel Remesh      | Robust for fixing holes/non-manifold geometry |
+| **Quad Remesher**        | Optional          | Paid plugin, currently skipped                |
 
 ## ⚙️ Blender Automation Pipeline
 
 We rely on `bpy` (Blender Python) to script the following operations:
+
 1. **Decimate**: Reduce poly count while preserving silhouette.
 2. **Remesh**: Create uniform topology (Voxel/Quadriflow).
 3. **Clean Normals**: Fix smooth/flat shading artifacts.
@@ -24,7 +25,8 @@ We rely on `bpy` (Blender Python) to script the following operations:
 ## 💻 Setup Guide
 
 ### 1. Mac M2 Pro (16GB RAM)
-*Target: Blender Metal Backend*
+
+_Target: Blender Metal Backend_
 
 MacOS users should install the standard Blender application to get the full `bpy` environment, or use the `bpy` pip package (experimental). **Recommendation:** Use Blender's bundled python.
 
@@ -40,7 +42,8 @@ MacOS users should install the standard Blender application to get the full `bpy
    ```
 
 ### 2. AWS Server (Headless Linux)
-*Target: CPU / CUDA (Cycles)*
+
+_Target: CPU / CUDA (Cycles)_
 
 For servers, we run Blender in background mode (`-b`).
 
@@ -51,7 +54,7 @@ For servers, we run Blender in background mode (`-b`).
    # Or download specific version tarball from blender.org for latest features
    ```
 2. **Install Instant Meshes (Headless)**:
-   *Note: Instant Meshes is GUI-first, but has a CLI mode. You may need to compile from source or find a binary.*
+   _Note: Instant Meshes is GUI-first, but has a CLI mode. You may need to compile from source or find a binary._
 
 ---
 
@@ -95,6 +98,74 @@ bpy.ops.export_scene.fbx(filepath=output_path, use_selection=True)
 ```
 
 **Run Command:**
+
 ```bash
 blender -b -P process_mesh.py
 ```
+
+---
+
+## 📦 LOD (Level of Detail) Generation
+
+### Targets (Guidance)
+
+- **LOD0**: 12k–20k tris (mobile mid), 25k–40k (PC mid)
+- **LOD1**: 6k–12k tris
+- **LOD2**: 3k–6k tris
+- Preserve UVs; bake normals from high-poly to lower LODs to retain detail
+- Downscale textures per LOD (e.g., 2k → 1k → 512), prefer **KTX2** for delivery
+
+### Blender Script (Generate LOD0/1/2)
+
+Save as `generate_lods.py`.
+
+```python
+import bpy
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+input_path = "clean_asset.obj"
+bpy.ops.import_scene.obj(filepath=input_path)
+src = bpy.context.selected_objects[0]
+bpy.context.view_layer.objects.active = src
+
+def make_lod(base_obj, name, ratio):
+    dup = base_obj.copy()
+    dup.data = base_obj.data.copy()
+    dup.name = name
+    bpy.context.collection.objects.link(dup)
+    bpy.context.view_layer.objects.active = dup
+    mod = dup.modifiers.new(name="Decimate", type='DECIMATE')
+    mod.ratio = ratio
+    bpy.ops.object.modifier_apply(modifier="Decimate")
+    return dup
+
+lod0 = make_lod(src, src.name + "_LOD0", 1.0)
+lod1 = make_lod(src, src.name + "_LOD1", 0.5)  # ~50%
+lod2 = make_lod(src, src.name + "_LOD2", 0.25) # ~25%
+
+for obj in [lod0, lod1, lod2]:
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.smart_project(angle_limit=66.0, island_margin=0.02)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+bpy.ops.object.select_all(action='DESELECT')
+for obj in [lod0, lod1, lod2]:
+    obj.select_set(True)
+
+bpy.ops.export_scene.fbx(filepath="asset_with_lods.fbx", use_selection=True)
+```
+
+**Run Command:**
+
+```bash
+blender -b -P generate_lods.py
+```
+
+### Export Conventions
+
+- Name meshes: `MeshName_LOD0`, `MeshName_LOD1`, `MeshName_LOD2`
+- For GLTF/GLB delivery, export separate files per LOD or embed named nodes
+- Bake normal maps from high-poly to LOD1/LOD2 to maintain silhouette detail
