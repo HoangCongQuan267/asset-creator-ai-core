@@ -32,7 +32,7 @@ We utilize the Hugging Face ecosystem:
 - A virtual environment is highly suggested.
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
@@ -44,10 +44,13 @@ Apple Silicon Macs use the `mps` device for acceleration. 16GB RAM is sufficient
 
 ```bash
 # Install PyTorch with MPS support
-pip install torch torchvision torchaudio
+python3 -m pip install torch torchvision torchaudio
+```
 
 # Install diffusion libraries
-pip install diffusers transformers accelerate controlnet_aux peft
+
+```bash
+python3 -m pip install diffusers transformers accelerate controlnet_aux peft
 ```
 
 **Optimization Tip for Mac M2:**
@@ -57,14 +60,17 @@ SDXL is large. To avoid out-of-memory errors on 16GB RAM, use `enable_model_cpu_
 
 _Target: CUDA_
 
-G4dn instances typically come with NVIDIA T4 GPUs (16GB VRAM).
+G4dn instances typically come with NVIDIA T4 GPUs (16GB VRAM) and usually run Ubuntu or Amazon Linux.
 
 ```bash
+# Update pip first to avoid issues
+python3 -m pip install --upgrade pip
+
 # Install PyTorch with CUDA support (check pytorch.org for the latest command)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Install diffusion libraries
-pip install diffusers transformers accelerate controlnet_aux peft xformers
+python3 -m pip install diffusers transformers accelerate controlnet_aux peft xformers
 ```
 
 _Note: `xformers` is recommended for NVIDIA GPUs to speed up attention and reduce memory usage._
