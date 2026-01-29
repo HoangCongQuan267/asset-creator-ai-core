@@ -123,6 +123,21 @@ image.save("generated_asset.png")
 - **Ecosystem**: Extensive library of fine-tuned models and LoRAs available on Civitai and Hugging Face.
 - **Production Ready**: High resolution native output (1024x1024) reduces the need for heavy upscaling steps immediately.
 
+### Improving Hands & Details
+
+To fix common issues like "mutated hands" or "extra fingers," use our enhanced script which applies **Negative Prompts**.
+
+```bash
+python3 enhanced_generation.py
+```
+
+**Key Techniques Used:**
+
+1.  **Negative Prompts**: Explicitly telling the model to avoid `mutated hands`, `missing fingers`, `bad anatomy`.
+2.  **Higher Step Count**: Uses 50 steps instead of default 30 for cleaner resolving.
+
+For perfect hands, you will eventually need **ControlNet** (see below).
+
 ### Using ControlNet
 
 ControlNet allows you to guide the generation using input images (e.g., posing a character).
