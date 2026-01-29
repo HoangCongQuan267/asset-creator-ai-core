@@ -96,4 +96,58 @@ This document outlines the product roadmap and a practical path to enter oversea
 
 - Implement infra as code and seed DB schemas
 - Launch MVP, instrument KPIs, iterate pricing
-- Begin USA/EU GTM; pilot China via cross-border CDN + enterprise trials
+
+---
+
+## Marketing Strategy
+
+### Positioning
+
+- Value: "From prompt to production‑ready assets in minutes — consistent, game‑engine‑ready"
+- Differentiators: end‑to‑end pipeline, HITL review gates, clean topology, rigging, export, low COGS/pricing
+- ICPs: indie teams, small studios, technical artists, prototyping teams, outsourcing vendors
+
+### Channels
+
+- Developer Communities: Reddit r/gamedev, r/IndieDev, Discord servers, Hacker News ShowHN
+- Marketplaces: Unity Asset Store, Unreal Marketplace, itch.io tools section
+- Content: tutorials, sample scenes, pipeline walkthroughs, engine‑specific guides
+- Social Proof: case studies, before/after, performance benchmarks, live streams
+- Partnerships: game engine factions, local VN studios, bootcamps, universities
+
+### Product‑Led Growth
+
+- Free tier or trial with limited assets; strong onboarding and templates
+- Shareable asset links (CDN) and project portfolios; referral rewards
+- In‑product prompts for upgrades when hitting quotas or high quality presets
+
+### SEO & Content
+
+- Keywords: "text to 3D", "auto rigging", "game asset generator", "Unity FBX export", "Unreal pipeline"
+- Publish weekly: "How to go from prompt to rigged character", "KTX2 textures for faster delivery", "Retopo basics"
+- Video tutorials on YouTube; short clips for TikTok/Instagram showcasing LODs and exports
+
+### Launch Plan
+
+- Pre‑launch list: landing page with demo; collect emails and use early access codes
+- Launch: Product Hunt, ShowHN, Reddit posts, dev communities; offer limited‑time Studio tier discount
+- Follow‑up: webinars; office hours; showcase user projects; feature library of styles/templates
+
+### Pricing & Offers
+
+- Region‑aware pricing (USD/EUR/CNY/JPY); indie‑friendly starter bundles
+- Referral program: 10% credit bonus; affiliate partners for creators and educators
+- Enterprise pilots: custom quotas, SSO, SLA; cross‑border delivery for China trials
+
+### Metrics
+
+- Activation: time to first asset; % completing end‑to‑end pipeline
+- Engagement: assets per project; repeat rate; HITL approvals
+- Conversion: trial→paid, bundle upgrades; referral rate
+- Acquisition: channel performance; CAC per channel
+
+### USA/EU/China Specifics
+
+- USA: Stripe/Paddle, paid ads (limited), dev communities, marketplaces, outbound to small studios
+- EU: GDPR compliance messaging, VAT pricing clarity, localized pages, partner with EU accelerators
+- China: cross‑border enterprise pilots, local CDN partner, Mandarin landing page, WeChat/Alipay via partner
