@@ -158,14 +158,27 @@ Users care about how fast they can **view/download** the result.
 ### 3. Architecture Update for Global Reach
 
 ```mermaid
-graph LR
-    UserGlobal[User (Asia/EU)] -->|Fast Download| CDN[CloudFront Edge]
-    CDN -->|Cache Hit| UserGlobal
-    CDN -->|Origin Fetch| S3[S3 Bucket (US)]
+graph TD
+    User["User / Game Client"] -->|HTTPS Request| API["API Gateway"]
+    API -->|Trigger| Lambda["Orchestrator Lambda"]
 
-    UserGlobal -->|API Request| API[API Gateway (US)]
-    API --> GPU_Cluster[GPU Cluster (US)]
-    GPU_Cluster -->|Upload| S3
+    subgraph "Queue System"
+        Lambda -->|Push Job| SQS_GEN["SQS: Generation Queue"]
+        Lambda -->|Push Job| SQS_RIG["SQS: Rigging Queue"]
+    end
+
+    subgraph "Auto-Scaling GPU Cluster (ECS/EKS or Batch)"
+        SQS_GEN -->|Pull| Worker_Gen["G4dn Workers (SDXL / TripoSR)"]
+        SQS_RIG -->|Pull| Worker_Rig["G4dn Workers (RigNet / Blender)"]
+    end
+
+    Worker_Gen -->|Save Asset| S3["S3 Bucket: Assets"]
+    Worker_Rig -->|Save Asset| S3
+
+    S3 -->|Notify| EventBridge["EventBridge"]
+    EventBridge -->|Update Status| DB[("DynamoDB: Job Status")]
+
+    User <-->|Poll Status / Get URL| API
 ```
 
 ## 🚀 Deployment Checklist

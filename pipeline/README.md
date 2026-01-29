@@ -36,7 +36,7 @@ To ensure high-quality results, the system expects structured input rather than 
 
 ## 🏗 Architecture Overview
 
-The pipeline operates as a directed acyclic graph (DAG), starting from the **Studio UI** which injects creative context.
+The pipeline operates as a directed acyclic graph (DAG), starting from the **Studio UI** which injects creative context. It includes **Caching**, **Safety Checks**, and **Human-in-the-Loop** checkpoints.
 
 ```mermaid
 graph TD
@@ -44,31 +44,61 @@ graph TD
         UI[Studio UI (Next.js)] -->|Project Context + User Input| API[API Gateway]
     end
 
-    API --> Validation[Input Validator]
-    Validation --> Service1[Text-to-Image Service]
+    API --> Auth[Auth & Quota Check]
+    Auth --> Cache{Cache Hit?}
+    Cache -->|Yes| CDN
+    Cache -->|No| Safety[NSFW / Safety Filter]
+
+    Safety --> Service1[Text-to-Image Service]
 
     subgraph "Quality Enhancement Loop"
         Service1 --> Upscale[Upscaler (RealESRGAN)]
         Upscale --> Refine[Detail Refiner (Img2Img)]
     end
 
-    subgraph "2D Pipeline"
-        Refine --> Service2[Image-to-2D-Assets & Animation]
-        Service2 --> Export2D[Export (Sprite/JSON)]
+    Refine --> Review1{User Review?}
+    Review1 -->|Approve| Branching
+    Review1 -->|Reject| Service1
+
+    subgraph "Branching Logic"
+        Branching -->|2D| Service2[Image-to-2D-Assets]
+        Branching -->|3D| Service3[Image-to-3D-Model]
     end
 
     subgraph "3D Pipeline"
-        Refine --> Service3[Image-to-3D-Model]
         Service3 --> Service4[Retopology & Remeshing]
         Service4 --> Service5[Rigging Service]
         Service5 --> Service6[3D Animation Generation]
         Service6 --> Export3D[Export (FBX/GLTF)]
     end
 
+    Service2 --> Export2D[Export (Sprite/JSON)]
+
     Export2D --> CDN[CloudFront CDN]
     Export3D --> CDN
     CDN --> UI
 ```
+
+---
+
+## 🛡 Production-Grade Enhancements
+
+To make this system robust for thousands of users, we integrate the following layers:
+
+### 1. Reliability & Safety Layer
+
+- **Content Moderation**: Before any generation, prompts are checked against a safety list. Generated images are scanned for NSFW content using a lightweight classifier.
+- **Circuit Breakers**: If a service (e.g., TripoSR) fails > 5 times in 1 minute, the system temporarily switches to a fallback model (e.g., Zero123++) or queues requests.
+- **Smart Caching**:
+  - Inputs are hashed (Prompt + Style + Seed).
+  - If a user requests a duplicate generation, the asset is served instantly from S3/CDN.
+
+### 2. Human-in-the-Loop (HITL)
+
+AI is not perfect. The pipeline supports **"Pause & Edit"** states:
+
+- **Checkpoint A (Image)**: User can paint over the generated 2D image before it goes to 3D.
+- **Checkpoint B (Mesh)**: User can download the `.obj`, fix topology in Blender manually, and re-upload to continue Rigging.
 
 ---
 
