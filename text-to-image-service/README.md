@@ -81,7 +81,13 @@ _Note: `xformers` is recommended for NVIDIA GPUs to speed up attention and reduc
 
 ### Loading SDXL (Base + Refiner)
 
-This script works on both Mac (MPS) and NVIDIA (CUDA) by detecting the device.
+You can run the provided test script to verify your installation and generate your first image.
+
+```bash
+python3 test_generation.py
+```
+
+Or copy this code manually:
 
 ```python
 import torch
