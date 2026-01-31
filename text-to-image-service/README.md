@@ -261,3 +261,107 @@ This tool is optimized for SDXL-Lightning (4-step) on top of SDXL.
 **AWS Issues:**
 
 - If CUDA is not found, verify NVIDIA drivers are installed: `nvidia-smi`.
+
+---
+
+## ☁️ Deploying on RunPod Serverless (Autoscaling GPU)
+
+This project can be deployed as a **RunPod Serverless endpoint** so you:
+
+- Pay only for GPU seconds actually used.
+- Automatically scale from 0 pods to many pods when requests per second increase.
+- Keep the same local-only checkpoint/LoRA configuration.
+
+At a high level you:
+
+1. Wrap `main.py` in a small HTTP or RunPod handler.
+2. Build a Docker image containing this repository and your models.
+3. Push the image to a registry (Docker Hub, GitHub Container Registry, etc.).
+4. Create a RunPod **Serverless GPU** endpoint that uses this image.
+5. Configure autoscaling and cost-optimization parameters.
+
+### 1. Create a serverless entrypoint
+
+Inside `text-to-image-service/`, add a lightweight API entrypoint that:
+
+- Loads the base model and LoRAs once at process startup.
+- Exposes a function or HTTP route that:
+  - Accepts JSON with `prompt`, `negative_prompt`, and optional overrides for `steps`, `cfg`, `width`, `height`, etc.
+  - Uses the existing pipeline code from `main.py` (reuse `resolve_base_model`, `build_pipeline`, and the config loading).
+  - Returns the generated image (e.g., as a base64-encoded PNG or as a path written to `/outputs`).
+
+RunPod supports:
+
+- HTTP-style services (your container runs a web server listening on a port).
+- The Python `runpod` worker style where you implement a `handler(event)` and call `runpod.serverless.start`.
+
+Either option works; choose whichever matches how you want to call the service.
+
+### 2. Build a Docker image
+
+From the repository root:
+
+```bash
+cd /Users/hoangcongquan/Documents/asset-creator-ai-core
+
+docker build \
+  -t YOUR_DOCKER_USER/asset-creator-tti:latest \
+  -f text-to-image-service/Dockerfile .
+```
+
+Your Dockerfile should:
+
+- Use a CUDA-enabled or RunPod base image.
+- Install Python 3 and the same dependencies as in this README.
+- Copy `text-to-image-service/` into the image.
+- Copy your local `models/` directory into the image or mount it as a volume at runtime.
+- Set `CMD` to launch your serverless entrypoint (HTTP server or RunPod handler).
+
+Push the image:
+
+```bash
+docker push YOUR_DOCKER_USER/asset-creator-tti:latest
+```
+
+### 3. Create a RunPod Serverless GPU endpoint
+
+In the RunPod UI:
+
+- Create a new **Serverless GPU Endpoint**.
+- Choose **Custom Image** and point it to `YOUR_DOCKER_USER/asset-creator-tti:latest`.
+- Set the container command/args to run your entrypoint (e.g. `python server.py`).
+- Select a GPU type that fits SDXL:
+  - For low cost: smaller GPUs (e.g., T4/A10) with fewer concurrent requests.
+  - For high throughput: larger GPUs (e.g., 4090/A40) with higher concurrency.
+- Expose the port if using HTTP mode, or use the default RunPod serverless handler configuration.
+
+### 4. Autoscaling and cost optimization
+
+Key settings for cost and scale:
+
+- **Min workers**: set to `0` to allow full scale-down when idle (no cost when unused).
+- **Max workers**: set based on maximum expected RPS and how long one generation takes.
+- **Concurrency per worker**:
+  - 1–2 is typical for SDXL to avoid GPU memory pressure.
+  - Higher concurrency can reduce cold starts but needs more VRAM.
+- **Idle timeout**:
+  - Lower (e.g. 60–300 seconds) → pods shut down faster, cheaper but more cold starts.
+  - Higher → fewer cold starts, but you pay for idle GPU time.
+
+Model loading optimization:
+
+- Load the pipeline and models once at process startup.
+- Reuse the same pipeline object for all requests in the worker.
+- Keep checkpoints and LoRAs inside the image or on a fast attached volume to avoid re-downloading.
+
+### 5. Calling the endpoint
+
+Once deployed, RunPod gives you an endpoint URL and an API key:
+
+- Send JSON payloads with the prompt configuration matching your serverless entrypoint.
+- For high RPS workloads, use keep-alive HTTP clients and batch requests where possible (if your handler supports batching).
+
+With this setup, RunPod will automatically:
+
+- Spin up additional GPU workers when request volume grows.
+- Scale back to zero when idle (if min workers is 0), keeping cost low.
