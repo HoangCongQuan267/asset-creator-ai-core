@@ -1,8 +1,8 @@
 {
   "loras": [],
   "prompt": {
-    "positive": "lady in white dress",
-    "negative": "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text"
+    "positive": "a set of magical potions with magical properties that can be used to heal someone",
+    "negative": "(deformed iris, deformed pupils), text, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, (extra fingers), (mutated hands), poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, (fused fingers), (too many fingers), long neck, camera"
   },
   "latent": {
     "width": 896,
