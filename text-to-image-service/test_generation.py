@@ -1,4 +1,5 @@
 import torch
+from pathlib import Path
 from diffusers import DiffusionPipeline
 
 
@@ -17,16 +18,28 @@ def main():
     print(f"🚀 Running on device: {device} with precision: {dtype}")
 
     try:
-        # Load SDXL Base
-        print(
-            "⏳ Loading Stable Diffusion XL model... (This may take a while for the first download)"
+        root_dir = Path(__file__).resolve().parent
+        local_checkpoint = (
+            root_dir / "models" / "checkpoints" / "base_checkpoint.safetensors"
         )
-        base = DiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0",
-            torch_dtype=dtype,
-            variant="fp16",
-            use_safetensors=True,
-        )
+        if local_checkpoint.is_file():
+            print(f"⏳ Loading local checkpoint from {local_checkpoint}...")
+            base = DiffusionPipeline.from_single_file(
+                str(local_checkpoint),
+                torch_dtype=dtype,
+                variant="fp16",
+                use_safetensors=True,
+            )
+        else:
+            print(
+                "⏳ Local checkpoint not found, loading Stable Diffusion XL model from Hugging Face..."
+            )
+            base = DiffusionPipeline.from_pretrained(
+                "stabilityai/stable-diffusion-xl-base-1.0",
+                torch_dtype=dtype,
+                variant="fp16",
+                use_safetensors=True,
+            )
 
         # Optimization: Offload to CPU when not in use (Crucial for Mac M2 16GB)
         if device == "mps":

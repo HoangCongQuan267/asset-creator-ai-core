@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+text-to-image-service/outputs/
 develop-eggs/
 dist/
 downloads/

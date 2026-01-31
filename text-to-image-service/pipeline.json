@@ -1,0 +1,12 @@
+{
+  "base_model": "models/checkpoints/base_checkpoint.safetensors",
+  "loras": [],
+  "positive_prompt": "lady in white dress",
+  "negative_prompt": "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text",
+  "height": 512,
+  "width": 512,
+  "steps": 50,
+  "guidance_scale": 6.5,
+  "output_dir": "outputs",
+  "filename_prefix": "asset"
+}

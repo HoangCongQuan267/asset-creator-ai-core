@@ -1,168 +1,263 @@
-# Asset Creator AI Core - Text to Image Setup
+# Asset Creator AI Core - Text to Image Service
 
-This guide focuses on setting up the foundational **Text → Image** generation pipeline. It covers the installation and usage of key models like Stable Diffusion XL (SDXL), Kandinsky 2.2, and OpenJourney, tailored for both **Mac M2 (Apple Silicon)** and **AWS G4dn** instances.
+This service provides a high-quality, optimized pipeline for generating game assets using **SDXL-Lightning**. It is designed to run efficiently on **Mac (M1/M2/M3)** and **AWS Servers (NVIDIA GPUs)**.
 
-## 🎨 Models Overview
+## 📂 Directory Structure
 
-These models serve as the foundation for generating game assets (characters, props, backgrounds).
-
-| Model                          | Use Case           | Key Features                                                                                                              |
-| ------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| **Stable Diffusion XL (SDXL)** | High quality base  | • Production safe for game pipelines<br>• Works for characters, props, backgrounds<br>• Huge ecosystem (LoRA, ControlNet) |
-| **Kandinsky 2.2**              | Strong composition | • Excellent at complex scenes and mixing concepts                                                                         |
-| **OpenJourney**                | Stylized assets    | • Midjourney-style aesthetics                                                                                             |
-| **ControlNet**                 | Precision control  | • Control pose, depth, and line art of generation                                                                         |
-
-## 🛠 Libraries
-
-We utilize the Hugging Face ecosystem:
-
-- **`diffusers`**: The core library for state-of-the-art diffusion models.
-- **`transformers`**: Required for the text encoders (CLIP, T5).
-- **`accelerate`**: Optimizes training and inference (essential for offloading and mixed precision).
-- **`controlnet_aux`**: Helper processors for ControlNet (e.g., extracting canny edges).
-- **`compel`**: Enables unlimited prompt lengths (bypassing the 77-token limit) and weighting syntax (e.g., `(word)++`).
+```
+text-to-image-service/
+├── main.py               # Main generation script
+├── download_models.sh    # Script to download essential models
+├── models/               # Place your local models here
+│   ├── checkpoints/      # Main Models (SDXL .safetensors from Civitai/HF)
+│   ├── loras/            # LoRA weights (Styles, Characters, Items)
+│   └── vae/              # Custom VAEs (Color fixers)
+└── outputs/              # Generated images will be saved here
+```
 
 ---
 
-## 💻 Setup Guide
+## 💻 Installation Guide
 
 ### Prerequisites
 
-- Python 3.10+ recommended.
-- A virtual environment is highly suggested.
+- Python 3.10+
+- `git`
 
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+### 1. Mac Setup (Apple Silicon - M1/M2/M3)
 
-### 1. Installation: Mac M2 (16GB RAM)
+**Target: Metal Performance Shaders (MPS)**
 
-_Target: Metal Performance Shaders (MPS)_
+1.  Create and activate a virtual environment:
 
-Apple Silicon Macs use the `mps` device for acceleration. 16GB RAM is sufficient for SDXL with some optimizations.
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-```bash
-# Install PyTorch with MPS support
-python3 -m pip install torch torchvision torchaudio
-```
+2.  Install dependencies (PyTorch with MPS support):
+    ```bash
+    pip install torch torchvision torchaudio
+    pip install diffusers transformers accelerate controlnet_aux peft compel safetensors huggingface_hub
+    ```
 
-# Install diffusion libraries
+### 2. AWS Server Setup (NVIDIA GPU - G4dn/G5)
 
-```bash
-python3 -m pip install diffusers transformers accelerate controlnet_aux peft compel
-```
+**Target: CUDA**
 
-**Optimization Tip for Mac M2:**
-SDXL is large. To avoid out-of-memory errors on 16GB RAM, use `enable_model_cpu_offload()` in your code (see Usage examples).
+1.  Update system and install Python 3.10 venv:
 
-### 2. Installation: AWS G4dn (NVIDIA T4)
+    ```bash
+    sudo apt update
+    sudo apt install python3.10-venv -y
+    ```
 
-_Target: CUDA_
+2.  Create and activate a virtual environment:
 
-G4dn instances typically come with NVIDIA T4 GPUs (16GB VRAM) and usually run Ubuntu or Amazon Linux.
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-```bash
-# Update pip first to avoid issues
-python3 -m pip install --upgrade pip
-
-# Install PyTorch with CUDA support (check pytorch.org for the latest command)
-python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# Install diffusion libraries
-python3 -m pip install diffusers transformers accelerate controlnet_aux peft xformers compel
-```
-
-_Note: `xformers` is recommended for NVIDIA GPUs to speed up attention and reduce memory usage._
+3.  Install dependencies (PyTorch with CUDA support):
+    ```bash
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    pip install diffusers transformers accelerate controlnet_aux peft compel safetensors huggingface_hub xformers
+    ```
+    _(Note: `xformers` is highly recommended for NVIDIA GPUs for speed)._
 
 ---
 
-## 🚀 Usage Examples
+## 📥 Downloading & Installing Models
 
-### Loading SDXL (Base + Refiner)
+To generate unique game styles (pixel art, anime, realism), you need:
 
-You can run the provided test script to verify your installation and generate your first image.
+- A base SDXL checkpoint (the main diffusion model).
+- Optional LoRA weights (styles, characters, items).
 
-```bash
-python3 test_generation.py
-```
+### 1. Automatic Download (Recommended)
 
-Or copy this code manually:
-
-```python
-import torch
-from diffusers import DiffusionPipeline
-
-# Device selection
-device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
-dtype = torch.float16 if device != "cpu" else torch.float32
-
-print(f"Running on {device} with {dtype}")
-
-# Load SDXL Base
-base = DiffusionPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    torch_dtype=dtype,
-    variant="fp16",
-    use_safetensors=True
-)
-
-# Optimization: Offload to CPU when not in use (Crucial for Mac M2 16GB)
-base.enable_model_cpu_offload()
-# base.to(device) # Use this instead of cpu_offload if you have massive VRAM (A100)
-
-# Generate
-prompt = "A cinematic shot of a cyberpunk street food vendor, neon lights, highly detailed, 8k"
-image = base(prompt=prompt).images[0]
-image.save("generated_asset.png")
-```
-
-### Why SDXL?
-
-- **Versatility**: Capable of generating consistent characters and diverse props.
-- **Ecosystem**: Extensive library of fine-tuned models and LoRAs available on Civitai and Hugging Face.
-- **Production Ready**: High resolution native output (1024x1024) reduces the need for heavy upscaling steps immediately.
-
-### Improving Hands & Details (Unlimited Prompts)
-
-To fix common issues like "mutated hands" and use **Unlimited Prompt Lengths** (170+ tokens supported), use our enhanced script.
+We provide a helper script to download commonly used assets (VAE + example LoRA):
 
 ```bash
-python3 enhanced_generation.py
+cd text-to-image-service
+chmod +x download_models.sh
+./download_models.sh
 ```
 
-**Key Techniques Used:**
+This script will populate:
 
-1.  **Compel Integration**: Bypasses the 77-token limit of standard CLIP. You can paste massive prompts generated by our LLM service.
-2.  **Negative Prompts**: Explicitly telling the model to avoid `mutated hands`, `missing fingers`, `bad anatomy`.
-3.  **Higher Step Count**: Uses 50 steps instead of default 30 for cleaner resolving.
+- `models/vae/sdxl-vae-fp16-fix/` – recommended VAE for SDXL.
+- `models/loras/StickersRedmond.safetensors` – example style LoRA.
 
-For perfect hands, you will eventually need **ControlNet** (see below).
+### 2. Base Checkpoints (SDXL)
 
-### Using ControlNet
+By default, the Python pipeline uses:
 
-ControlNet allows you to guide the generation using input images (e.g., posing a character).
+- `stabilityai/stable-diffusion-xl-base-1.0` as the base model.
+- `ByteDance/SDXL-Lightning` as the LoRA repo with `sdxl_lightning_4step_lora.safetensors`.
 
-```python
-from diffusers import StableDiffusionXLControlNetPipeline, ControlNetModel, AutoencoderKL
-from diffusers.utils import load_image
-import numpy as np
-import cv2
+You can keep this online-only (Hugging Face will cache weights), or download a local copy:
 
-# Load ControlNet (e.g., Canny for edge detection)
-controlnet = ControlNetModel.from_pretrained(
-    "diffusers/controlnet-canny-sdxl-1.0",
-    torch_dtype=torch.float16
-)
-
-pipe = StableDiffusionXLControlNetPipeline.from_pretrained(
-    "stabilityai/stable-diffusion-xl-base-1.0",
-    controlnet=controlnet,
-    torch_dtype=torch.float16,
-)
-pipe.enable_model_cpu_offload()
-
-# Prepare your control image (canny edge map) here...
-# image = pipe(prompt, image=canny_image).images[0]
+```bash
+cd text-to-image-service/models/checkpoints
+git lfs install
+git clone https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0 my_sdxl_base
 ```
+
+Then run the generator pointing at the local directory:
+
+```bash
+cd text-to-image-service
+python3 main.py --base-model models/checkpoints/my_sdxl_base
+```
+
+### 3. LoRAs (Styles / Characters)
+
+On AWS, you often cannot browse. Use `wget` or `curl` to grab LoRAs directly from Civitai or Hugging Face.
+
+#### Option A: LoRAs from HuggingFace
+
+Example: Download SDXL-Lightning LoRA weights locally (optional, for offline use):
+
+```bash
+cd text-to-image-service/models/loras
+wget https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step_lora.safetensors
+```
+
+Then run:
+
+```bash
+cd text-to-image-service
+python3 main.py \
+  --lora models/loras/sdxl_lightning_4step_lora.safetensors
+```
+
+#### Option B: LoRAs / Checkpoints from Civitai
+
+Go to Civitai on your PC, right-click the "Download" button, and copy the link.
+
+```bash
+# Example: Downloading a LoRA style
+cd text-to-image-service/models/loras
+
+# Use -O to specify the filename (important for Civitai links)
+wget -O line_art_style.safetensors "https://civitai.com/api/download/models/XXXXXX"
+```
+
+You can then reference this LoRA in the pipeline:
+
+```bash
+cd text-to-image-service
+python3 main.py --lora models/loras/line_art_style.safetensors
+```
+
+---
+
+## 🚀 Usage
+
+### Running the Generator
+
+1.  Navigate to the directory:
+
+    ```bash
+    cd text-to-image-service
+    ```
+
+2.  Run the script:
+
+    ```bash
+    # Generic entrypoint (auto device)
+    python3 main.py
+
+    # Mac-specific entrypoint (prefers MPS)
+    python3 main_mac.py
+
+    # AWS-specific entrypoint (prefers CUDA)
+    python3 main_aws.py
+    ```
+
+3.  Follow the prompts:
+    - Positive Prompt: Describe your asset.
+    - Negative Prompt: Press Enter for defaults.
+
+4.  Result: Check `outputs/` folder.
+
+### Choosing Model Checkpoints (ComfyUI-style)
+
+The Python pipeline lets you control which checkpoint and LoRA are used, similar to ComfyUI.
+
+Key flags:
+
+- `--base-model`: base checkpoint (Hugging Face model id or local directory).
+- `--lora`: LoRA to apply (Hugging Face repo, directory, or `.safetensors` file).
+- `--lora-weight`: filename of the LoRA weight when using a repo or directory.
+
+Defaults (if you do nothing):
+
+- Base model: `stabilityai/stable-diffusion-xl-base-1.0`
+- LoRA: `ByteDance/SDXL-Lightning`
+- LoRA weight: `sdxl_lightning_4step_lora.safetensors`
+
+Examples:
+
+```bash
+# 1. Default base model + SDXL-Lightning LoRA (online)
+python3 main.py
+
+# 2. Use a local base checkpoint directory
+python3 main.py --base-model models/checkpoints/my_sdxl_base
+
+# 3. Use a specific style LoRA from Civitai
+python3 main.py --lora models/loras/line_art_style.safetensors
+
+# 4. Disable LoRA entirely (pure base model)
+python3 main.py --lora none
+```
+
+You can also control defaults via environment variables:
+
+- `ASSET_TTI_BASE_MODEL`
+- `ASSET_TTI_LORA`
+- `ASSET_TTI_LORA_WEIGHT`
+- `ASSET_TTI_HEIGHT`, `ASSET_TTI_WIDTH`, `ASSET_TTI_STEPS`, `ASSET_TTI_GUIDANCE`
+
+### Mac vs AWS: Example Commands
+
+Mac (M1/M2/M3, MPS):
+
+```bash
+python3 main_mac.py
+```
+
+AWS (G4dn/G5, CUDA):
+
+```bash
+python3 main_aws.py
+```
+
+The script will:
+
+- Prefer CUDA on AWS when available.
+- Prefer MPS on Apple Silicon when CUDA is not present.
+- Fall back to CPU otherwise.
+
+### ⚡ SDXL-Lightning (Fast Generation)
+
+This tool is optimized for SDXL-Lightning (4-step) on top of SDXL.
+
+- Speed: Generates 1024x1024 images in seconds.
+- Quality: Comparable to full SDXL but much faster.
+- Offline Mode: Clone the base SDXL model into `models/checkpoints/` and optionally download the SDXL-Lightning LoRA into `models/loras/`, then point `--base-model` and `--lora` at those paths.
+
+---
+
+## 🔧 Troubleshooting
+
+**Mac (MPS) Issues:**
+
+- If you see "Out of Memory", ensure other heavy apps are closed. The script uses `enable_model_cpu_offload()` to fit SDXL into 8GB/16GB RAM.
+
+**AWS Issues:**
+
+- If CUDA is not found, verify NVIDIA drivers are installed: `nvidia-smi`.
