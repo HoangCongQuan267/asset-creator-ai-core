@@ -311,10 +311,14 @@ def resolve_lora_list(entries: list[object]) -> list[tuple[str, str]]:
             repo_or_dir, weight_name = resolve_lora_values(item, None)
             resolved.append((repo_or_dir, weight_name))
         elif isinstance(item, dict):
-            raw_lora = item.get("lora")
-            raw_weight = item.get("lora_weight")
+            if "path" in item or "weight" in item or "name" in item:
+                raw_lora = item.get("path")
+                raw_weight = None
+            else:
+                raw_lora = item.get("lora")
+                raw_weight = item.get("lora_weight")
             if not isinstance(raw_lora, str) or not raw_lora.strip():
-                raise RuntimeError("Each LoRA entry must have a non-empty 'lora' value")
+                raise RuntimeError("Each LoRA entry must have a non-empty path")
             repo_or_dir, weight_name = resolve_lora_values(raw_lora, raw_weight)
             resolved.append((repo_or_dir, weight_name))
         else:

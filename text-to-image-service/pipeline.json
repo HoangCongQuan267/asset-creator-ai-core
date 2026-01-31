@@ -1,8 +1,14 @@
 {
-  "loras": [],
+  "loras": [
+    {
+      "name": "LogoRedmondV2-Logo-LogoRedmAF",
+      "path": "models/loras/StickersRedmond.safetensors",
+      "weight": 1.0
+    }
+  ],
   "prompt": {
-    "positive": "a set of magical potions with magical properties that can be used to heal someone",
-    "negative": "(deformed iris, deformed pupils), text, worst quality, low quality, jpeg artifacts, ugly, duplicate, morbid, mutilated, (extra fingers), (mutated hands), poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated, bad anatomy, bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs, missing arms, missing legs, extra arms, extra legs, (fused fingers), (too many fingers), long neck, camera"
+    "positive": "logo,A logo for a space travel company, launching rocket, space-themed colors (black, purple, dark blue)),LogoRedAF,<lora:LogoRedmondV2-Logo-LogoRedmAF: 1>",
+    "negative": "bad art, ugly, deformed, watermark, duplicated"
   },
   "latent": {
     "width": 896,
