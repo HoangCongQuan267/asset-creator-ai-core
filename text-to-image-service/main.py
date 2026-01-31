@@ -70,6 +70,69 @@ def apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
         value = config["loras"]
         setattr(args, "loras", value)
 
+    prompt_block = config.get("prompt")
+    if isinstance(prompt_block, dict):
+        pos = prompt_block.get("positive")
+        neg = prompt_block.get("negative")
+        if isinstance(pos, str) and pos.strip():
+            setattr(args, "positive_prompt", pos)
+        if isinstance(neg, str) and neg.strip():
+            setattr(args, "negative_prompt", neg)
+
+    latent_block = config.get("latent")
+    if isinstance(latent_block, dict):
+        h = latent_block.get("height")
+        w = latent_block.get("width")
+        b = latent_block.get("batch_size")
+        if h is not None:
+            try:
+                args.height = int(h)
+            except Exception:
+                pass
+        if w is not None:
+            try:
+                args.width = int(w)
+            except Exception:
+                pass
+        if b is not None:
+            try:
+                batch_size = int(b)
+                if batch_size != 1:
+                    raise RuntimeError("Only batch_size=1 is supported")
+            except Exception:
+                raise
+
+    samplers_block = config.get("ksamplers")
+    if isinstance(samplers_block, list) and samplers_block:
+        setattr(args, "ksamplers", samplers_block)
+        base_sampler: dict[str, object] | None = None
+        for sampler in samplers_block:
+            if not isinstance(sampler, dict):
+                continue
+            model_name = sampler.get("model")
+            if model_name is None or model_name == "base":
+                base_sampler = sampler
+                break
+        if base_sampler is None:
+            first = samplers_block[0]
+            base_sampler = first if isinstance(first, dict) else None
+        if base_sampler is not None:
+            raw_cfg = base_sampler.get("cfg")
+            raw_seed = base_sampler.get("noise_seed", base_sampler.get("seed"))
+            raw_model = base_sampler.get("model")
+            if raw_cfg is not None:
+                try:
+                    args.guidance_scale = float(raw_cfg)
+                except Exception:
+                    pass
+            if raw_seed is not None:
+                try:
+                    args.seed = int(raw_seed)
+                except Exception:
+                    pass
+            if isinstance(raw_model, str) and raw_model.strip():
+                setattr(args, "base_model", raw_model)
+
 
 def apply_comfy_nodes(args: argparse.Namespace, config: dict[str, object]) -> None:
     nodes = config.get("nodes")

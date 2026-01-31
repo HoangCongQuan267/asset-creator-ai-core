@@ -1,12 +1,39 @@
 {
-  "base_model": "models/checkpoints/base_checkpoint.safetensors",
   "loras": [],
-  "positive_prompt": "lady in white dress",
-  "negative_prompt": "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text",
-  "height": 512,
-  "width": 512,
+  "prompt": {
+    "positive": "lady in white dress",
+    "negative": "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text"
+  },
+  "latent": {
+    "width": 896,
+    "height": 1152,
+    "batch_size": 1
+  },
   "steps": 50,
-  "guidance_scale": 6.5,
+  "ksamplers": [
+    {
+      "name": "base",
+      "model": "models/checkpoints/base_checkpoint.safetensors",
+      "add_noise": true,
+      "noise_seed": 690326400695301,
+      "cfg": 6.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "start_at_step": 0,
+      "end_at_step": 50
+    },
+    {
+      "name": "refiner",
+      "model": "models/checkpoints/base_checkpoint.safetensors",
+      "add_noise": true,
+      "noise_seed": 690326400695301,
+      "cfg": 6.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "start_at_step": 25,
+      "end_at_step": 50
+    }
+  ],
   "output_dir": "outputs",
   "filename_prefix": "asset"
 }
