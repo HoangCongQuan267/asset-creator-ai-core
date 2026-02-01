@@ -7,7 +7,7 @@
     }
   ],
   "prompt": {
-    "positive": "logo,A logo for a space travel company, launching rocket, space-themed colors (black, purple, dark blue)),LogoRedAF,<lora:LogoRedmondV2-Logo-LogoRedmAF: 1>",
+    "positive": "circle logo,A logo for a space travel company, launching rocket, space-themed colors (black, purple, dark blue)),LogoRedAF,<lora:LogoRedmondV2-Logo-LogoRedmAF: 1>",
     "negative": "bad art, ugly, deformed, watermark, duplicated"
   },
   "latent": {
