@@ -69,6 +69,9 @@ def apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
     if "loras" in config:
         value = config["loras"]
         setattr(args, "loras", value)
+    if "doras" in config:
+        value = config["doras"]
+        setattr(args, "doras", value)
 
     prompt_block = config.get("prompt")
     if isinstance(prompt_block, dict):
@@ -333,6 +336,7 @@ def build_pipeline(
     lora_repo_or_dir: str | None,
     lora_weight_name: str | None,
     loras: list[tuple[str, str]] | None = None,
+    doras: list[tuple[str, str]] | None = None,
 ) -> StableDiffusionXLPipeline:
     kwargs: dict[str, object] = {
         "torch_dtype": dtype,
@@ -351,8 +355,14 @@ def build_pipeline(
             f"Base model path '{base_model}' does not exist. Remote downloads are disabled."
         )
 
+    adapters: list[tuple[str, str]] = []
     if loras:
-        for repo_or_dir, weight_name in loras:
+        adapters.extend(loras)
+    if doras:
+        adapters.extend(doras)
+
+    if adapters:
+        for repo_or_dir, weight_name in adapters:
             pipe.load_lora_weights(repo_or_dir, weight_name=weight_name)
         pipe.fuse_lora()
     elif lora_repo_or_dir and lora_weight_name:
@@ -486,6 +496,12 @@ def run(args: argparse.Namespace) -> None:
         lora_repo_or_dir, lora_weight_name = None, None
     else:
         lora_repo_or_dir, lora_weight_name = resolve_lora(args.lora, args.lora_weight)
+    doras: list[tuple[str, str]] | None = None
+    if hasattr(args, "doras") and getattr(args, "doras") is not None:
+        raw_doras = getattr(args, "doras")
+        if not isinstance(raw_doras, list):
+            raise RuntimeError("Config field 'doras' must be a list")
+        doras = resolve_lora_list(raw_doras)
 
     print("Pipeline configuration:")
     print(f"  Device: {device} ({dtype})")
@@ -499,6 +515,10 @@ def run(args: argparse.Namespace) -> None:
         print(f"  LoRA weight file: {lora_weight_name}")
     else:
         print("  LoRA: disabled")
+    if doras:
+        print("  DORAs:")
+        for repo_or_dir, weight_name in doras:
+            print(f"    - {repo_or_dir} :: {weight_name}")
     print(f"  Height x Width: {args.height} x {args.width}")
     print(f"  Steps: {args.steps}")
     print(f"  Guidance scale: {args.guidance_scale}")
@@ -514,6 +534,7 @@ def run(args: argparse.Namespace) -> None:
         lora_repo_or_dir=lora_repo_or_dir,
         lora_weight_name=lora_weight_name,
         loras=loras,
+        doras=doras,
     )
 
     positive_attr = getattr(args, "positive_prompt", None)
