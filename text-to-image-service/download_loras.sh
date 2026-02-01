@@ -34,22 +34,29 @@ download_file() {
 }
 
 CIVITAI_LORA_IDS=(
-    "160130" #StickersRedmond
+    "160130:stickers_redmond"
     # Add more Civitai LoRA model ids here, one per line.
     # Example:
-    # "123456"
+    # "123456:MyLoraName"
+    "198105:picture_books_children_cartoon"
+    "135931:pixel_art"
+    "128609:voxel_xl"
+    "156373:game_icon"
+    "183638:detail_enhance"
 )
 
 index=1
-for id in "${CIVITAI_LORA_IDS[@]}"; do
+for entry in "${CIVITAI_LORA_IDS[@]}"; do
+    id="${entry%%:*}"
+    name="${entry#*:}"
     url="https://civitai.com/api/download/models/$id"
 
-    if [ "$index" -eq 1 ]; then
-        filename="StickersRedmond.safetensors"
-        pattern="StickersRedmond*.safetensors"
-    else
+    if [ "$id" = "$name" ]; then
         filename="lora_${id}.safetensors"
         pattern="lora_${id}*.safetensors"
+    else
+        filename="${name}_${id}.safetensors"
+        pattern="${name}_${id}*.safetensors"
     fi
 
     echo "LoRA $index from Civitai (model id: $id): $url"

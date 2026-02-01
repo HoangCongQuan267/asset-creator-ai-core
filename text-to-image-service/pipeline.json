@@ -1,15 +1,20 @@
 {
   "loras": [
     {
-      "name": "LogoRedmondV2-Logo-LogoRedmAF",
-      "path": "models/loras/StickersRedmond.safetensors",
+      "name": "198105",
+      "path": "models/loras/lora_198105.safetensors",
+      "weight": 0.75
+    },
+    {
+      "name": "135931",
+      "path": "models/loras/lora_135931.safetensors",
       "weight": 1.0
     }
   ],
   "doras": [],
   "prompt": {
-    "positive": "A cute cat sticker, stickers, <lora:StickersRedmond:1>",
-    "negative": "ugly, disfigured, duplicate, mutated, bad art, blur, blurry, dof"
+    "positive": "<lora:children huiben11-20231007-000006:0.75>,children's picture books,crayon paintings,blush,white background,simple background,Outgoing, boy, wearing outdoor clothes, wearing a hat, skateboarding, backpack, dirty, a peaceful place",
+    "negative": "things on forehead,(forehead jewel:1.1),bad quality,bad anatomy,blurry,stretched,deformed,bad lighting,EasyNegative,signature,watermark,text"
   },
   "latent": {
     "width": 1024,
