@@ -1,19 +1,8 @@
 {
-  "loras": [
-    {
-      "name": "198105",
-      "path": "models/loras/lora_198105.safetensors",
-      "weight": 0.75
-    },
-    {
-      "name": "135931",
-      "path": "models/loras/lora_135931.safetensors",
-      "weight": 1.0
-    }
-  ],
+  "loras": [],
   "doras": [],
   "prompt": {
-    "positive": "<lora:children huiben11-20231007-000006:0.75>,children's picture books,crayon paintings,blush,white background,simple background,Outgoing, boy, wearing outdoor clothes, wearing a hat, skateboarding, backpack, dirty, a peaceful place",
+    "positive": "set of game icon, pet, flame, lava, hight detail, dragon, ash",
     "negative": "things on forehead,(forehead jewel:1.1),bad quality,bad anatomy,blurry,stretched,deformed,bad lighting,EasyNegative,signature,watermark,text"
   },
   "latent": {

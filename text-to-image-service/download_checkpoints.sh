@@ -34,22 +34,24 @@ download_file() {
 }
 
 CIVITAI_MODEL_IDS=(
-    "128078" #SDXL
+    "128078:sdxl_base"
     # Add more Civitai model ids here, one per line.
     # Example:
-    # "123456"
+    # "123456:MyCheckpointName"
 )
 
 index=1
-for id in "${CIVITAI_MODEL_IDS[@]}"; do
+for entry in "${CIVITAI_MODEL_IDS[@]}"; do
+    id="${entry%%:*}"
+    name="${entry#*:}"
     url="https://civitai.com/api/download/models/$id"
 
-    if [ "$index" -eq 1 ]; then
-        filename="base_checkpoint.safetensors"
-        pattern="base_checkpoint*.safetensors"
-    else
+    if [ "$id" = "$name" ]; then
         filename="checkpoint_${id}.safetensors"
         pattern="checkpoint_${id}*.safetensors"
+    else
+        filename="${name}_${id}.safetensors"
+        pattern="${name}_${id}*.safetensors"
     fi
 
     echo "Checkpoint $index from Civitai (model id: $id): $url"
