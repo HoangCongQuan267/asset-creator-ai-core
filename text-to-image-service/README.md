@@ -222,6 +222,231 @@ You can also control defaults via environment variables:
 - `ASSET_TTI_LORA_WEIGHT`
 - `ASSET_TTI_HEIGHT`, `ASSET_TTI_WIDTH`, `ASSET_TTI_STEPS`, `ASSET_TTI_GUIDANCE`
 
+---
+
+## 🧩 `pipeline.json` Interface
+
+This service can be driven entirely by a JSON configuration file named `pipeline.json` in the `text-to-image-service/` folder (or a custom JSON passed via `--config`). The Python entry point loads this file with `load_config` and applies it via `apply_config` and `apply_comfy_nodes`.
+
+### Top-level fields
+
+- `loras: []`
+  - Type: array of strings or objects.
+  - Purpose: list of LoRA adapters to load and fuse into the SDXL pipeline.
+  - Object shape:
+    ```json
+    {
+      "name": "human_label_optional",
+      "path": "models/loras/MyStyle_123456.safetensors",
+      "weight": 1.0
+    }
+    ```
+  - Resolution rules:
+  - If `path` is absolute, it is used directly.
+  - If `path` is relative, the code tries:
+    - `./path`
+    - `./models/loras/<filename>`
+  - All resolved entries are loaded via `pipe.load_lora_weights(...)` and then fused with `pipe.fuse_lora()`.
+
+- `doras: []`
+  - Same structure and resolution as `loras`.
+  - Purpose: LoRA‑compatible adapters (DORA) loaded and fused alongside LoRAs.
+
+- `prompt`
+  - Shape:
+    ```json
+    {
+      "positive": "string",
+      "negative": "string"
+    }
+    ```
+  - `positive`:
+  - Base positive text prompt.
+  - If empty/missing, the CLI asks for input; if still empty, a generic high‑quality asset prompt is used.
+  - `negative`:
+  - Base negative text prompt.
+  - If empty/missing, the CLI asks for input; if still empty, a generic global negative is used (low quality, extra limbs, watermark, etc.).
+
+- `latent`
+  - Shape:
+    ```json
+    {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+    ```
+  - `width` / `height`:
+  - Image resolution in pixels.
+  - Applied directly as `width` / `height` in the SDXL pipeline call.
+  - `batch_size`:
+  - Must be `1`. Any other value raises a runtime error.
+  - The current implementation generates one image per run for predictable VRAM usage.
+
+- `steps`
+  - Type: integer.
+  - Purpose: number of diffusion steps (`num_inference_steps`).
+  - Higher = more refinement (slower). For standard SDXL checkpoints, 20–40 is a good range; your example uses `30`.
+
+- `center_object`
+  - Type: boolean.
+  - Purpose: high‑level switch to bias composition toward a single subject centered in the frame.
+  - When `true`, the code rewrites your prompts before calling the pipeline:
+  - Positive prompt becomes:
+    - `"single centered object, clean simple background, symmetric composition, subject fully visible, no cropping, " + <your_positive_or_default>`
+  - Negative prompt is extended (or created) to include:
+    - `"multiple subjects, group of objects, busy background, text, logo, watermark, off-center composition, subject cut off at edges"`
+  - When `false` or omitted, your prompts are used as‑is (aside from the normal defaults if left blank).
+
+- `ksamplers`
+  - Shape:
+    ```json
+    "ksamplers": [
+      {
+        "name": "sdxl_base_128078",
+        "model": "models/checkpoints/sdxl_base_128078.safetensors",
+        "add_noise": true,
+        "noise_seed": 690326400695301,
+        "cfg": 7,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "exponential",
+        "start_at_step": 0,
+        "end_at_step": 30
+      }
+    ]
+    ```
+  - Fields wired into the Python runner:
+  - `model`:
+    - If non‑empty, overrides `base_model` and points at a local SDXL checkpoint file or directory.
+  - `cfg`:
+    - Parsed as `guidance_scale`. Controls classifier‑free guidance strength.
+    - Higher = more adherence to the prompt, less diversity. Typical SDXL range: 5–8.
+  - `noise_seed` (or `seed` if present):
+    - Parsed as `seed` and used to seed the PyTorch generator for reproducible outputs.
+
+  #### 1. `sampler_name` – the algorithm
+
+  `sampler_name` chooses the mathematical algorithm used to predict and remove noise at each step.
+  - **Simple / Fast samplers** (good general defaults)
+    - Examples: `euler`, `heun`
+    - Characteristics: Reliable, fast, deterministic. Great for most use cases.
+  - **Ancestral samplers** (more "creative")
+    - Examples: `euler_ancestral`, `dpmpp_2s_a`
+    - Characteristics: Add a bit of new noise back each step. Images keep changing slightly even at high step counts. Often more dreamy / experimental, but less stable for single‑object icons.
+  - **Modern SDE samplers** (recommended for SDXL)
+    - Examples: `dpmpp_2m_sde`, `dpmpp_3m_sde`
+    - Characteristics: Excellent for realism, especially skin and fine detail. `dpmpp_2m_sde` is the common "industry standard" for SDXL balance.
+  - **UniPC (uni_pc)**:
+    - Extremely fast sampler; can get good results in ~10–15 steps when paired with an appropriate schedule.
+
+  In this implementation:
+  - If `sampler_name` contains `"euler"` → the pipeline uses `EulerDiscreteScheduler`.
+  - Otherwise → it uses `DPMSolverMultistepScheduler` (a modern default for SDXL).
+
+  #### 2. `scheduler` – the noise timetable
+
+  The `scheduler` controls the noise level (sigmas) at each step. It answers: "Do we remove a lot of noise early, or spread it out?"
+  - `normal`:
+    - Steady, roughly linear noise removal. Neutral, balanced schedule.
+  - `karras` (highly recommended):
+    - Removes more noise early and very little at the end.
+    - Preserves fine details and reduces "blurry" or "flat" results.
+  - `exponential`:
+    - Very aggressive early, then quickly decays.
+    - Good for stylized art and bold shapes.
+  - `sgm_uniform`:
+    - Schedule tailored for some "Turbo"/"Lightning" or SGM‑style training setups.
+  - `simple`:
+    - Basic schedule, mostly useful for testing.
+
+  In this implementation:
+  - When using `DPMSolverMultistepScheduler`:
+    - `karras` or `exponential` → enable Karras‑style sigmas when supported.
+    - Any other value → default DPMSolver schedule.
+
+  #### 3. "Golden combos" for SDXL
+
+  Some pairings that work very well for single‑object SDXL assets:
+  - Goal: **All‑rounder**
+    - `sampler_name`: `dpmpp_2m`
+    - `scheduler`: `karras`
+    - Steps: ~25–35
+  - Goal: **Maximum realism**
+    - `sampler_name`: `dpmpp_2m_sde`
+    - `scheduler`: `karras`
+    - Steps: ~30–40
+  - Goal: **Speed / testing**
+    - `sampler_name`: `euler`
+    - `scheduler`: `normal`
+    - Steps: ~20
+  - Goal: **Artistic / dreamy**
+    - `sampler_name`: `euler_ancestral`
+    - `scheduler`: `karras`
+    - Steps: ~25–30
+
+  For your "single centered object" icons, a very strong default is:
+  - `sampler_name`: `dpmpp_2m` or `dpmpp_2m_sde`
+  - `scheduler`: `karras`
+  - `cfg`: ~6–7
+  - `steps`: ~25–35
+
+  This combination is stable (less likely to hallucinate extra objects in the background) while still producing detailed, clean assets.
+  - The remaining fields (`name`, `add_noise`, `start_at_step`, `end_at_step`) are kept for ComfyUI‑style parity and future extensions, but do not currently change pipeline behavior.
+
+- `output_dir`
+  - Type: string (path).
+  - Purpose: directory where generated images are saved.
+  - The runner creates this directory if it does not exist.
+
+- `filename_prefix`
+  - Type: string.
+  - Purpose: prefix for generated filenames.
+  - Final filenames look like `<filename_prefix>_<unix_timestamp>.png` (for example, `asset_1710000000.png`).
+
+### Example `pipeline.json`
+
+Your current example:
+
+```json
+{
+  "loras": [],
+  "doras": [],
+  "prompt": {
+    "positive": "[Palette: #2d3436, #0984e3, #6c5ce7] cyberpunk sword",
+    "negative": "collage, collection, set, group, sprite sheet, multiple views, split screen, grid, border, frame, text, watermark, blurry, two objects, many items"
+  },
+  "latent": {
+    "width": 1024,
+    "height": 1024,
+    "batch_size": 1
+  },
+  "steps": 30,
+  "center_object": true,
+  "ksamplers": [
+    {
+      "name": "sdxl_base_128078",
+      "model": "models/checkpoints/sdxl_base_128078.safetensors",
+      "add_noise": true,
+      "noise_seed": 690326400695301,
+      "cfg": 7,
+      "sampler_name": "dpmpp_2m_sde",
+      "scheduler": "exponential",
+      "start_at_step": 0,
+      "end_at_step": 30
+    }
+  ],
+  "output_dir": "outputs",
+  "filename_prefix": "asset"
+}
+```
+
+This configuration describes:
+
+- No extra LoRAs/DORAs.
+- A single 1024×1024 image using the local SDXL checkpoint at `models/checkpoints/sdxl_base_128078.safetensors`.
+- 30 diffusion steps with CFG 7 and an exponential DPM++ 2M SDE schedule (the sampler fields are informational for now).
+- A strong single‑object prompt (`center_object: true`) with an explicit negative prompt that forbids multi‑object “set/collection” layouts.
+
 ### Mac vs AWS: Example Commands
 
 Mac (M1/M2/M3, MPS):

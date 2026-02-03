@@ -5,7 +5,12 @@ import time
 from pathlib import Path
 
 import torch
-from diffusers import DPMSolverMultistepScheduler, StableDiffusionXLPipeline
+from diffusers import (
+    DPMSolverMultistepScheduler,
+    EulerDiscreteScheduler,
+    UniPCMultistepScheduler,
+    StableDiffusionXLPipeline,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -46,6 +51,7 @@ def apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
         "filename_prefix": "filename_prefix",
         "positive_prompt": "positive_prompt",
         "negative_prompt": "negative_prompt",
+        "center_object": "center_object",
     }
     for key, attr in mapping.items():
         if key in config:
@@ -123,6 +129,8 @@ def apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
             raw_cfg = base_sampler.get("cfg")
             raw_seed = base_sampler.get("noise_seed", base_sampler.get("seed"))
             raw_model = base_sampler.get("model")
+            raw_sampler_name = base_sampler.get("sampler_name")
+            raw_scheduler_name = base_sampler.get("scheduler")
             if raw_cfg is not None:
                 try:
                     args.guidance_scale = float(raw_cfg)
@@ -135,6 +143,10 @@ def apply_config(args: argparse.Namespace, config: dict[str, object]) -> None:
                     pass
             if isinstance(raw_model, str) and raw_model.strip():
                 setattr(args, "base_model", raw_model)
+            if isinstance(raw_sampler_name, str) and raw_sampler_name.strip():
+                setattr(args, "sampler_name", raw_sampler_name.strip())
+            if isinstance(raw_scheduler_name, str) and raw_scheduler_name.strip():
+                setattr(args, "scheduler_name", raw_scheduler_name.strip())
 
 
 def apply_comfy_nodes(args: argparse.Namespace, config: dict[str, object]) -> None:
@@ -337,6 +349,8 @@ def build_pipeline(
     lora_weight_name: str | None,
     loras: list[tuple[str, str]] | None = None,
     doras: list[tuple[str, str]] | None = None,
+    sampler_name: str | None = None,
+    scheduler_name: str | None = None,
 ) -> StableDiffusionXLPipeline:
     kwargs: dict[str, object] = {
         "torch_dtype": dtype,
@@ -369,7 +383,19 @@ def build_pipeline(
         pipe.load_lora_weights(lora_repo_or_dir, weight_name=lora_weight_name)
         pipe.fuse_lora()
 
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    config = pipe.scheduler.config
+    sampler_name_lower = (sampler_name or "").lower()
+    scheduler_name_lower = (scheduler_name or "").lower()
+    if "euler" in sampler_name_lower:
+        pipe.scheduler = EulerDiscreteScheduler.from_config(config)
+    elif "uni_pc" in sampler_name_lower or "unipc" in sampler_name_lower:
+        pipe.scheduler = UniPCMultistepScheduler.from_config(config)
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_config(config)
+        if scheduler_name_lower in {"karras", "exponential"}:
+            if hasattr(scheduler, "use_karras_sigmas"):
+                scheduler.use_karras_sigmas = True
+        pipe.scheduler = scheduler
 
     if device == "mps":
         pipe.enable_model_cpu_offload()
@@ -472,6 +498,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional JSON config file. If omitted, tries pipeline.json in this folder.",
     )
+    parser.add_argument(
+        "--center-object",
+        action="store_true",
+        help="Bias composition toward a single object centered in the frame.",
+    )
     return parser.parse_args()
 
 
@@ -535,6 +566,8 @@ def run(args: argparse.Namespace) -> None:
         lora_weight_name=lora_weight_name,
         loras=loras,
         doras=doras,
+        sampler_name=getattr(args, "sampler_name", None),
+        scheduler_name=getattr(args, "scheduler_name", None),
     )
 
     positive_attr = getattr(args, "positive_prompt", None)
@@ -559,6 +592,34 @@ def run(args: argparse.Namespace) -> None:
         negative = input("Negative prompt (press Enter for defaults): ").strip()
         if not negative:
             negative = "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text"
+
+    center_object = getattr(args, "center_object", False)
+    if center_object:
+        base_positive = positive.strip() if positive else ""
+        center_positive_prefix = (
+            "(isolated single object:1.5), (one 100% solo item:1.4)"
+        )
+        center_position_afterfix = ", centered, solid white background,"
+        if base_positive:
+            positive = (
+                center_positive_prefix + ", " + base_positive + center_position_afterfix
+            )
+        else:
+            positive = center_positive_prefix + center_position_afterfix
+
+        center_negative_suffix = (
+            "(two:1.5), (multiple:1.5), (group:1.5), (clutter:1.3), "
+            "(duplicate:1.3), background, scenery, landscape, "
+        )
+        base_negative = negative.strip() if negative else ""
+        if base_negative:
+            negative = base_negative + ", " + center_negative_suffix
+        else:
+            negative = center_negative_suffix
+
+    print("Prompts:")
+    print(f"  Positive: {positive}")
+    print(f"  Negative: {negative}")
 
     generator_device = device if device in {"cuda", "cpu"} else "cpu"
     generator = torch.Generator(generator_device)

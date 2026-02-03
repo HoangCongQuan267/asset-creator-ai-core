@@ -2,8 +2,8 @@
   "loras": [],
   "doras": [],
   "prompt": {
-    "positive": "[Palette: #2d3436, #0984e3, #6c5ce7] (single sword:1.3) fantasy sword, game asset, white background center frame",
-    "negative": "(multiple items:1.4), (collage:1.4) collage, collection, set, group, sprite sheet, multiple views, split screen, grid, border, frame, text, watermark, blurry, two objects, many items"
+    "positive": "red magical cat",
+    "negative": "blurry"
   },
   "latent": {
     "width": 1024,
@@ -11,6 +11,7 @@
     "batch_size": 1
   },
   "steps": 30,
+  "center_object": true,
   "ksamplers": [
     {
       "name": "sdxl_base_128078",
