@@ -1,0 +1,14 @@
+diffusers
+transformers
+accelerate
+controlnet_aux
+peft
+compel
+safetensors
+huggingface_hub
+# Optional for image processing
+opencv-python
+numpy
+segment-anything
+ultralytics
+git+https://github.com/ultralytics/CLIP.git

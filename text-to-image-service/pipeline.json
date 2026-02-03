@@ -2,7 +2,7 @@
   "loras": [],
   "doras": [],
   "prompt": {
-    "positive": "red magical cat",
+    "positive": "(single object:1.5) short sword is a game asset",
     "negative": "blurry"
   },
   "latent": {
@@ -10,7 +10,7 @@
     "height": 1024,
     "batch_size": 1
   },
-  "steps": 30,
+  "steps": 20,
   "center_object": true,
   "ksamplers": [
     {
@@ -18,11 +18,11 @@
       "model": "models/checkpoints/sdxl_base_128078.safetensors",
       "add_noise": true,
       "noise_seed": 690326400695301,
-      "cfg": 7,
+      "cfg": 10,
       "sampler_name": "dpmpp_2m_sde",
       "scheduler": "exponential",
       "start_at_step": 0,
-      "end_at_step": 30
+      "end_at_step": 20
     }
   ],
   "output_dir": "outputs",

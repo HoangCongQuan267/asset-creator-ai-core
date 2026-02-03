@@ -11,6 +11,7 @@ from diffusers import (
     UniPCMultistepScheduler,
     StableDiffusionXLPipeline,
 )
+from PIL import Image
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -410,6 +411,78 @@ def build_pipeline(
     return pipe
 
 
+def center_object_postprocess(
+    image, output_path: Path, text_prompt: str
+) -> Path | None:
+    width, height = image.width, image.height
+    margin_x = int(width * 0.1)
+    margin_y = int(height * 0.1)
+    x1_i = margin_x
+    y1_i = margin_y
+    x2_i = width - margin_x
+    y2_i = height - margin_y
+
+    try:
+        from yolo_world_detector import detect_largest_box
+    except ImportError:
+        print(
+            "center_object postprocess: yolo_world_detector module not found, using center crop"
+        )
+    else:
+        try:
+            box = detect_largest_box(image, text_prompt)
+        except Exception as e:
+            print(f"center_object postprocess: yolo_world_detector failed: {e}")
+        else:
+            if box is not None and len(box) == 4:
+                bx1, by1, bx2, by2 = box
+                x1_i = max(int(bx1), 0)
+                y1_i = max(int(by1), 0)
+                x2_i = min(int(bx2), width)
+                y2_i = min(int(by2), height)
+
+    if x2_i <= x1_i or y2_i <= y1_i:
+        x1_i, y1_i = 0, 0
+        x2_i, y2_i = width, height
+
+    object_image = image.crop((x1_i, y1_i, x2_i, y2_i))
+
+    try:
+        import numpy as np
+        from segment_anything import SamPredictor, sam_model_registry
+
+        sam_checkpoint_path = MODELS_DIR / "sam" / "sam_vit_h.pth"
+        if sam_checkpoint_path.is_file():
+            sam = sam_model_registry["vit_h"](checkpoint=str(sam_checkpoint_path))
+            predictor = SamPredictor(sam)
+            image_np = np.array(image)
+            predictor.set_image(image_np)
+            box_np = np.array([x1_i, y1_i, x2_i, y2_i], dtype=np.float32)
+            masks, scores, logits = predictor.predict(
+                box=box_np[None, :],
+                multimask_output=False,
+            )
+            if masks is not None and len(masks) > 0:
+                mask = masks[0].astype("uint8") * 255
+                mask_img = Image.fromarray(mask)
+                mask_crop = mask_img.crop((x1_i, y1_i, x2_i, y2_i))
+                object_rgba = object_image.convert("RGBA")
+                object_rgba.putalpha(mask_crop)
+                object_image = object_rgba
+    except ImportError:
+        print(
+            "center_object postprocess: segment_anything is not installed, using bounding box crop"
+        )
+    except Exception as e:
+        print(f"center_object postprocess SAM failed: {e}")
+
+    object_output_path = output_path.with_name(
+        f"{output_path.stem}_object{output_path.suffix}"
+    )
+    object_image.save(object_output_path)
+    return object_output_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Asset Creator AI Core - Text to Image (SDXL pipeline)"
@@ -593,30 +666,6 @@ def run(args: argparse.Namespace) -> None:
         if not negative:
             negative = "low quality, blurry, distorted, extra limbs, bad anatomy, watermark, text"
 
-    center_object = getattr(args, "center_object", False)
-    if center_object:
-        base_positive = positive.strip() if positive else ""
-        center_positive_prefix = (
-            "(isolated single object:1.5), (one 100% solo item:1.4)"
-        )
-        center_position_afterfix = ", centered, solid white background,"
-        if base_positive:
-            positive = (
-                center_positive_prefix + ", " + base_positive + center_position_afterfix
-            )
-        else:
-            positive = center_positive_prefix + center_position_afterfix
-
-        center_negative_suffix = (
-            "(two:1.5), (multiple:1.5), (group:1.5), (clutter:1.3), "
-            "(duplicate:1.3), background, scenery, landscape, "
-        )
-        base_negative = negative.strip() if negative else ""
-        if base_negative:
-            negative = base_negative + ", " + center_negative_suffix
-        else:
-            negative = center_negative_suffix
-
     print("Prompts:")
     print(f"  Positive: {positive}")
     print(f"  Negative: {negative}")
@@ -641,6 +690,13 @@ def run(args: argparse.Namespace) -> None:
     filename = f"{args.filename_prefix}_{timestamp}.png"
     output_path = out_dir / filename
     image.save(output_path)
+
+    center_object = getattr(args, "center_object", False)
+    if center_object:
+        print(f"Center Object: {center_object}")
+        object_output_path = center_object_postprocess(image, output_path, positive)
+        if object_output_path is not None:
+            print(f"Object image saved to {object_output_path}")
 
     print(f"Image saved to {output_path}")
 
