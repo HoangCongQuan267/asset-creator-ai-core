@@ -220,8 +220,8 @@ def process_with_rembg(image, model="u2net"):
 def process_with_hybrid_matting(image):
     """
     State-of-the-Art Pipeline:
-    1. Segmentation: ORMBG (High quality mask)
-    2. Trimap Generation: Erode/Dilate ORMBG mask
+    1. Segmentation: Union of ORMBG + InSPyReNet (Robustness)
+    2. Trimap Generation: Erode/Dilate Combined mask
     3. Alpha Matting: FBA Matting (Seamless edges/transparency)
     """
     # 1. Get ORMBG Mask
@@ -229,41 +229,53 @@ def process_with_hybrid_matting(image):
 
     # Extract Alpha
     ormbg_np = np.array(ormbg_result)
-    alpha = ormbg_np[:, :, 3]
+    ormbg_alpha = ormbg_np[:, :, 3]
 
-    # 2. Generate Trimap
+    combined_alpha = ormbg_alpha
+
+    # 2. Get InSPyReNet Mask (for robustness - recovers missing body parts)
+    try:
+        inspyre_result = process_with_inspyrenet(image)
+        inspyre_np = np.array(inspyre_result)
+        inspyre_alpha = inspyre_np[:, :, 3]
+
+        # Union Strategy: Max(ORMBG, InSPyReNet)
+        # This ensures we don't lose body parts that one model misses
+        combined_alpha = np.maximum(ormbg_alpha, inspyre_alpha)
+        logger.info("Hybrid Matting: Combined ORMBG + InSPyReNet masks")
+    except Exception as e:
+        logger.warning(f"Hybrid Matting: InSPyReNet fallback failed: {e}")
+
+    # 3. Generate Trimap from Combined Alpha
     # Trimap values: 0=BG, 128=Unknown, 255=FG
-    # We treat pixels with intermediate alpha as "Unknown" to refine them
-    # Plus a small erosion/dilation to catch edge boundaries
 
-    # Define Trimap
-    trimap = np.zeros_like(alpha)
-    trimap[alpha > 10] = 128  # Potential FG
-    trimap[alpha > 240] = 255  # Definite FG
+    # Define Trimap based on the ROBUST combined mask
+    trimap = np.zeros_like(combined_alpha)
+    trimap[combined_alpha > 10] = 128  # Potential FG
+    trimap[combined_alpha > 240] = 255  # Definite FG
 
     # Improve Trimap with Morphological Operations
     # Erode to find definite foreground
     kernel_size = 10
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
 
-    # Definite FG: Erode the ORMBG mask significantly
-    fg_mask = cv2.erode(alpha, kernel, iterations=1)
+    # Definite FG: Erode the COMBINED mask
+    fg_mask = cv2.erode(combined_alpha, kernel, iterations=1)
 
-    # Definite BG: Dilate the ORMBG mask significantly (inverse is BG)
-    bg_mask_dilated = cv2.dilate(alpha, kernel, iterations=1)
+    # Definite BG: Dilate the COMBINED mask (inverse is BG)
+    bg_mask_dilated = cv2.dilate(combined_alpha, kernel, iterations=1)
 
     # Construct Trimap
-    trimap = np.zeros_like(alpha)
+    trimap = np.zeros_like(combined_alpha)
     trimap[:] = 128  # Default to Unknown
 
     # Set Definite FG (255) where eroded mask is high
     trimap[fg_mask > 240] = 255
 
     # Set Definite BG (0) where dilated mask is low
-    # i.e., where there is definitely NO object
     trimap[bg_mask_dilated < 10] = 0
 
-    # 3. Run FBA Matting
+    # 4. Run FBA Matting
     fba_model = get_fba_model()
 
     # FBA Matting expects:
