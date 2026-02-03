@@ -351,30 +351,62 @@ def process_with_hybrid_matting(image):
         # --- Post-FBA Cleanup (The "Trick") ---
         matte_np = np.array(matte_result)
 
-        # 1. Gamma Correction (De-Halo): Push semi-transparent pixels towards 0
-        # Reduced Gamma to 2.0 (was 2.5) to be effective but less harsh.
-        # This hides the "contaminated" pixels by making them fully transparent.
+        # 1. Morphological Erosion (The "Choke")
+        # Physically shrink the mask by 1 pixel to eat away the contaminated edge.
+        # This removes the "white halo" pixels entirely by forcing them into the background.
+        kernel_choke = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        matte_np = cv2.erode(matte_np, kernel_choke, iterations=1)
+
+        # 2. Levels Adjustment (Sharpen Lines)
+        # Instead of simple Gamma, we use a sigmoid-like curve to force pixels
+        # to either 0 (transparent) or 255 (opaque), leaving only a thin anti-aliased edge.
+        # This fixes the "blurry edge" issue.
+
+        # Normalize to 0-1
         alpha_float = matte_np.astype(np.float32) / 255.0
-        alpha_float = np.power(alpha_float, 2.0)
+
+        # Hard Thresholding with Soft Edges (S-Curve)
+        # Input: 0.0 - 0.6 -> 0.0 (Clean Background) - VERY AGGRESSIVE DE-FOG
+        # Input: 0.6 - 0.95 -> Steep Slope (Sharp Edge)
+        # Input: 0.95 - 1.0 -> 1.0 (Solid Body)
+
+        # We set lower_threshold to 0.6 to kill ALL faint fog/halo.
+        # We set upper_threshold to 0.95 to ensure only the VERY solid parts are opaque.
+
+        lower_threshold = 0.6
+        upper_threshold = 0.95
+
+        # Rescale the range [0.6, 0.95] to [0.0, 1.0]
+        alpha_float = (alpha_float - lower_threshold) / (
+            upper_threshold - lower_threshold
+        )
+
+        # Clamp to [0, 1]
+        alpha_float = np.clip(alpha_float, 0.0, 1.0)
+
+        # Convert back to uint8
         matte_np = (alpha_float * 255.0).astype(np.uint8)
 
-        # 2. Haze Removal: Threshold faint pixels
-        matte_np[matte_np < 20] = 0
+        # 3. Haze Removal: Threshold faint pixels (Already covered by lower_threshold above)
+        # But let's keep a small safety check for floating point errors
+        matte_np[matte_np < 10] = 0
 
-        # 3. Safety Net: Enforce Boundary
+        # 4. Safety Net: Enforce Boundary
         if matte_np.shape == bg_mask_dilated.shape:
             matte_np = cv2.bitwise_and(matte_np, bg_mask_dilated)
 
-        # 4. Core Restoration: Enforce Solidity
+        # 5. Core Restoration: Enforce Solidity
+        # We trust the original eroded mask for the DEEP core.
+        # But we also want to trust the S-Curve result for the "almost core".
         matte_np = np.maximum(matte_np, fg_mask)
 
-        # 5. Final Cleanup: Keep Largest Component AGAIN
+        # 6. Final Cleanup: Keep Largest Component AGAIN
         # FBA Matting might have hallucinated some disconnected blobs in the trimap area.
         matte_np = get_largest_component_mask(matte_np)
 
         # Use original RGB (No Inpainting/Smearing)
-        # The "Color Extension" caused "frog" (fog/halo) artifacts.
-        # We rely on Gamma Correction to hide the background halo.
+        # The Inpainting caused "froggy" artifacts again.
+        # We rely on "Choke" (Erosion) + High Thresholds to kill the halo.
         img_np = np.array(image.convert("RGB"))
         cleaned_rgb = img_np
 
