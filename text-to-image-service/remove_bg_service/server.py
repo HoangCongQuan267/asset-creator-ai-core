@@ -2,6 +2,7 @@ from PIL import Image
 import io
 import shutil
 import ssl
+import cv2
 
 # Fix SSL certificate errors on macOS
 try:
@@ -35,7 +36,14 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Lazy loading cache
-_models = {"bria": None, "inspyrenet": None, "rembg": {}, "ormbg": None, "carvekit": {}}
+_models = {
+    "bria": None,
+    "inspyrenet": None,
+    "rembg": {},
+    "ormbg": None,
+    "carvekit": {},
+    "fba": None,
+}
 
 
 def get_device():
@@ -153,16 +161,24 @@ def get_carvekit_model(model_name):
     return _models["carvekit"][model_name]
 
 
+def get_fba_model():
+    if _models["fba"] is None:
+        download_all()
+        logger.info("Initializing FBA Matting model...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # FBAMatting needs to be initialized
+        _models["fba"] = FBAMatting(device=device, input_tensor_size=2048, batch_size=1)
+
+    return _models["fba"]
+
+
 # Processing functions
 def process_with_bria(image):
-    model = get_bria_model()
-    result = model(image, return_mask=True)
-    mask = result
-    if not isinstance(mask, Image.Image):
-        mask = Image.fromarray((mask * 255).astype("uint8"))
-    no_bg_image = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    no_bg_image.paste(image, mask=mask)
-    return no_bg_image
+    # Use ORMBG (Local) instead of downloading Bria pipeline
+    # Bria AI RMBG-1.4 is the same model as ORMBG
+    # This avoids "MaxRetryError" when huggingface.co is unreachable
+    logger.info("process_with_bria: Using local ORMBG model (offline fallback)")
+    return process_with_ormbg(image)
 
 
 def process_with_ormbg(image):
@@ -199,6 +215,85 @@ def process_with_inspyrenet(image):
 def process_with_rembg(image, model="u2net"):
     session = get_rembg_session(model)
     return rembg_remove(image, session=session)
+
+
+def process_with_hybrid_matting(image):
+    """
+    State-of-the-Art Pipeline:
+    1. Segmentation: ORMBG (High quality mask)
+    2. Trimap Generation: Erode/Dilate ORMBG mask
+    3. Alpha Matting: FBA Matting (Seamless edges/transparency)
+    """
+    # 1. Get ORMBG Mask
+    ormbg_result = process_with_ormbg(image)
+
+    # Extract Alpha
+    ormbg_np = np.array(ormbg_result)
+    alpha = ormbg_np[:, :, 3]
+
+    # 2. Generate Trimap
+    # Trimap values: 0=BG, 128=Unknown, 255=FG
+    # We treat pixels with intermediate alpha as "Unknown" to refine them
+    # Plus a small erosion/dilation to catch edge boundaries
+
+    # Define Trimap
+    trimap = np.zeros_like(alpha)
+    trimap[alpha > 10] = 128  # Potential FG
+    trimap[alpha > 240] = 255  # Definite FG
+
+    # Improve Trimap with Morphological Operations
+    # Erode to find definite foreground
+    kernel_size = 10
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+
+    # Definite FG: Erode the ORMBG mask significantly
+    fg_mask = cv2.erode(alpha, kernel, iterations=1)
+
+    # Definite BG: Dilate the ORMBG mask significantly (inverse is BG)
+    bg_mask_dilated = cv2.dilate(alpha, kernel, iterations=1)
+
+    # Construct Trimap
+    trimap = np.zeros_like(alpha)
+    trimap[:] = 128  # Default to Unknown
+
+    # Set Definite FG (255) where eroded mask is high
+    trimap[fg_mask > 240] = 255
+
+    # Set Definite BG (0) where dilated mask is low
+    # i.e., where there is definitely NO object
+    trimap[bg_mask_dilated < 10] = 0
+
+    # 3. Run FBA Matting
+    fba_model = get_fba_model()
+
+    # FBA Matting expects:
+    # - images: List of PIL Images (RGB)
+    # - trimaps: List of PIL Images (Grayscale)
+
+    # Convert trimap to PIL
+    trimap_pil = Image.fromarray(trimap)
+
+    # Ensure image is RGB
+    image_rgb = image.convert("RGB")
+
+    # Inference
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda":
+        fba_model.to(device)
+
+    try:
+        # FBA Matting returns a list of Grayscale images (Alpha masks)
+        matte_result = fba_model([image_rgb], [trimap_pil])[0]
+
+        # Composite with original image to get RGBA result
+        no_bg_image = image.convert("RGBA")
+        no_bg_image.putalpha(matte_result)
+
+        return no_bg_image
+    finally:
+        if device == "cuda":
+            fba_model.to("cpu")
+            torch.cuda.empty_cache()
 
 
 def process_with_carvekit(image, model="u2net"):

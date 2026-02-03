@@ -7,13 +7,23 @@ import cv2
 import torch
 
 try:
-    from .remove_bg_service.server import process_with_inspyrenet, process_with_bria
+    from .remove_bg_service.server import (
+        process_with_inspyrenet,
+        process_with_bria,
+        process_with_ormbg,
+        process_with_hybrid_matting,
+    )
 
     INSPYRENET_AVAILABLE = True
 except ImportError as e:
     # Try absolute import if relative fails (e.g. running script directly)
     try:
-        from remove_bg_service.server import process_with_inspyrenet, process_with_bria
+        from remove_bg_service.server import (
+            process_with_inspyrenet,
+            process_with_bria,
+            process_with_ormbg,
+            process_with_hybrid_matting,
+        )
 
         INSPYRENET_AVAILABLE = True
     except ImportError as e2:
@@ -112,6 +122,11 @@ def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple]
         main_mask = np.zeros_like(alpha)
         cv2.drawContours(main_mask, contours, best_idx, 255, cv2.FILLED)
 
+        # Dilate the main mask slightly to capture soft edges/glow/hair tips
+        # that might be below the threshold (alpha < 10) but visually important.
+        kernel_smooth = np.ones((5, 5), np.uint8)
+        main_mask = cv2.dilate(main_mask, kernel_smooth, iterations=1)
+
         # Copy original alpha ONLY where main_mask is present
         # This removes other unrelated objects floating around
         final_alpha = cv2.bitwise_and(alpha, alpha, mask=main_mask)
@@ -119,9 +134,9 @@ def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple]
         # 2. Smart Hole Filling
         # Iterate through children (holes) of the best contour
         main_area = cv2.contourArea(contours[best_idx])
-        # Threshold: Holes smaller than 2% of the object area are considered "details" and filled.
-        # Holes larger than 2% are considered "real background".
-        hole_threshold = main_area * 0.02
+        # Threshold: Holes smaller than 0.5% (was 2%) of the object area are considered "details" and filled.
+        # We lowered this because ORMBG/InSPyReNet are very accurate, so large holes are likely real.
+        hole_threshold = main_area * 0.005
 
         child_idx = hierarchy[best_idx][2]
         while child_idx != -1:
@@ -164,87 +179,65 @@ def center_object_postprocess(
         image.save(output_path)
         return output_path
 
-    print("Step 1: Removing Background (Parallel Ensemble)...")
-
-    # 1. Run Bria (Good for Salient Object Detection / Coarse Mask)
-    bria_image = None
-    try:
-        print("  - Running Bria...")
-        bria_image = process_with_bria(image)
-    except Exception as e:
-        print(f"  - Bria failed: {e}")
-
-    # 2. Run InSPyReNet (Good for High Quality Edges / Transparency)
-    inspyrenet_image = None
-    try:
-        print("  - Running InSPyReNet...")
-        inspyrenet_image = process_with_inspyrenet(image)
-    except Exception as e:
-        print(f"  - InSPyReNet failed: {e}")
-
-    # 3. Combine Results (Mask Guidance)
+    print("Step 1: Removing Background (Prioritized Strategy)...")
     image_no_bg = None
 
-    if inspyrenet_image and bria_image:
-        print("  - Combining models: Using Bria to guide InSPyReNet...")
-        # Convert to numpy
-        inspy_np = np.array(inspyrenet_image)
-        bria_np = np.array(bria_image)
+    # Priority 1: Hybrid Matting (ORMBG + FBA Matting) - The "Secret Sauce"
+    # This aligns with the user's request for "Alpha Matting" and "Refinement Loops".
+    try:
+        print("  - Attempting Hybrid Matting (ORMBG + FBA Matting)...")
+        image_no_bg = process_with_hybrid_matting(image)
+    except Exception as e:
+        print(f"  - Hybrid Matting failed: {e}")
 
-        # Extract Alphas
-        inspy_alpha = inspy_np[:, :, 3]
-        bria_alpha = bria_np[:, :, 3]
+    # Priority 2: ORMBG (State-of-the-art Open Source, similar to Remove.bg)
+    if image_no_bg is None:
+        try:
+            print("  - Attempting ORMBG (Fallback)...")
+            image_no_bg = process_with_ormbg(image)
+        except Exception as e:
+            print(f"  - ORMBG failed or not available: {e}")
 
-        # Dilate Bria mask slightly to ensure we don't clip InSPyReNet's fine details (hair/fur)
-        # We trust Bria for "Is the object here?" but trust InSPyReNet for "Where exactly is the edge?"
-        kernel = np.ones((15, 15), np.uint8)  # Moderate dilation
-        bria_mask_dilated = cv2.dilate(bria_alpha, kernel, iterations=1)
+    # Priority 3: InSPyReNet (High Quality, Transparent Background)
+    if image_no_bg is None:
+        try:
+            print("  - Attempting InSPyReNet...")
+            image_no_bg = process_with_inspyrenet(image)
+        except Exception as e:
+            print(f"  - InSPyReNet failed: {e}")
 
-        # Normalize to 0-1 for multiplication
-        mask_guidance = bria_mask_dilated.astype(float) / 255.0
-
-        # Apply guidance: Keep InSPyReNet alpha ONLY where Bria says there is likely an object (plus margin)
-        # This removes background clutter that InSPyReNet might have missed
-        final_alpha = inspy_alpha.astype(float) * mask_guidance
-
-        inspy_np[:, :, 3] = final_alpha.astype(np.uint8)
-        image_no_bg = Image.fromarray(inspy_np)
-
-    elif inspyrenet_image:
-        print("  - Using InSPyReNet result only.")
-        image_no_bg = inspyrenet_image
-    elif bria_image:
-        print("  - Using Bria result only (Fallback).")
-        image_no_bg = bria_image
-    else:
+    if image_no_bg is None:
         print("  - All BG removal failed.")
         image.save(output_path)
         return output_path
 
-    print("Step 2: Analyzing Objects...")
-    result = get_main_object_mask_and_box(image_no_bg)
+    print("Step 2: Cropping to content...")
 
-    if result:
-        final_alpha, box = result
-        x1, y1, x2, y2 = box
+    # Simple, robust cropping that trusts the model's output
+    # mimics remove.bg behavior: just remove transparent pixels
+    try:
+        if image_no_bg.mode != "RGBA":
+            image_no_bg = image_no_bg.convert("RGBA")
 
-        # Apply the refined alpha to the image
-        img_np = np.array(image_no_bg)
-        img_np[:, :, 3] = final_alpha
+        bbox = image_no_bg.getbbox()
 
-        image_clean = Image.fromarray(img_np)
+        if bbox:
+            # Add small padding if desired, or keep tight
+            padding = 10
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, x1 - padding)
+            y1 = max(0, y1 - padding)
+            x2 = min(width, x2 + padding)
+            y2 = min(height, y2 + padding)
 
-        # Crop with padding
-        padding = 10
-        x1 = max(0, x1 - padding)
-        y1 = max(0, y1 - padding)
-        x2 = min(width, x2 + padding)
-        y2 = min(height, y2 + padding)
+            print(f"Found Content at: {x1, y1, x2, y2}")
+            object_image = image_no_bg.crop((x1, y1, x2, y2))
+        else:
+            print("No content found (fully transparent), using full image.")
+            object_image = image_no_bg
 
-        print(f"Found Main Object at: {x1, y1, x2, y2}")
-        object_image = image_clean.crop((x1, y1, x2, y2))
-    else:
-        print("No distinct object found, using full image.")
+    except Exception as e:
+        print(f"Error during cropping: {e}")
         object_image = image_no_bg
 
     # 3. Save
