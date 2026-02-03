@@ -306,9 +306,9 @@ This service can be driven entirely by a JSON configuration file named `pipeline
 
   **About Object Segmentation:**
   This feature uses **ISNet-General-Use** (via the `rembg` library), a state-of-the-art model for salient object detection.
-  - **High Quality Edges**: Uses alpha matting post-processing to ensure soft, anti-aliased edges (no jagged pixelation).
   - **Smart Selection**: Identifies the main object using Connected Components Analysis (Islands) + Heuristics (Size/Centrality).
-  - **Hole Preservation**: Correctly handles transparent areas inside objects (e.g., handles, rings) by respecting the model's alpha output.
+  - **Smart Hole Filling**: Automatically fills small internal holes (details matching background color) while preserving large real background areas (e.g., inside a ring).
+  - **Clean Edges**: Uses the raw high-quality alpha output from ISNet to avoid edge erosion artifacts.
   - The model file (`isnet-general-use.onnx`, ~179MB) downloads automatically on the first run.
 
   - `ksamplers`

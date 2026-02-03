@@ -43,10 +43,15 @@ def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple]
     Analyzes the alpha channel of an RGBA image to find the 'main' object.
     Heuristic: Combination of Area and Centrality.
 
+    Uses contour hierarchy to:
+    1. Identify the main object.
+    2. Remove unrelated objects (other islands).
+    3. Fill SMALL holes (likely false positives/details).
+    4. Keep LARGE holes (likely real background).
+
     Returns:
-        tuple: (mask, (x1, y1, x2, y2))
-               mask: A binary mask (255 where main object is, 0 otherwise).
-                     Crucially, this preserves holes inside the object if they were detected.
+        tuple: (processed_alpha, (x1, y1, x2, y2))
+               processed_alpha: The refined alpha channel.
                box: The bounding box of the main object.
         or None if no valid object found.
     """
@@ -62,29 +67,35 @@ def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple]
         alpha = img_np[:, :, 3]
 
         # Threshold alpha to get binary mask for connectivity analysis
-        # Using a low threshold to catch soft edges
         _, binary = cv2.threshold(alpha, 10, 255, cv2.THRESH_BINARY)
 
-        # Use Connected Components to find islands
-        # connectivity=8 checks 8-neighbors
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            binary, connectivity=8
+        # Find contours with hierarchy (RETR_CCOMP) to detect holes
+        contours, hierarchy = cv2.findContours(
+            binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
         )
 
-        if num_labels <= 1:
-            # Label 0 is background (all zeros), so if num_labels <= 1, we have no objects
+        if not contours:
             return None
+
+        # hierarchy is shape (1, N, 4) -> (Next, Prev, First_Child, Parent)
+        hierarchy = hierarchy[0]
 
         width, height = image.size
         center_x, center_y = width / 2, height / 2
 
         best_score = -1
-        best_label = -1
+        best_idx = -1
         best_box = None
 
-        # Iterate over labels (skip 0 which is background)
-        for i in range(1, num_labels):
-            x, y, w, h, area = stats[i]
+        # Iterate over contours
+        for i, cnt in enumerate(contours):
+            # Check if it's a top-level contour (Parent == -1)
+            # This filters out holes from being candidates for "Main Object"
+            if hierarchy[i][3] != -1:
+                continue
+
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = cv2.contourArea(cnt)
 
             # Filter tiny noise
             if w < 10 or h < 10:
@@ -98,23 +109,51 @@ def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple]
             max_dist_sq = (width / 2) ** 2 + (height / 2) ** 2
             dist_norm = dist_sq / max_dist_sq
 
-            # Score = Area * (1 - 0.5 * dist_norm)
+            # Score: Favor large area and closeness to center
+            # Weight area more heavily to avoid picking small central debris
             score = area * (1.0 - 0.5 * dist_norm)
 
             if score > best_score:
                 best_score = score
-                best_label = i
+                best_idx = i
                 best_box = (x, y, x + w, y + h)
 
-        if best_label == -1:
+        if best_idx == -1:
             return None
 
-        # Create the mask for the selected object
-        # This mask is 255 where labels == best_label, 0 otherwise
-        # Since 'labels' was computed from the binary mask, holes (which are 0) remain 0.
-        mask = np.where(labels == best_label, 255, 0).astype(np.uint8)
+        # Start with a clean alpha channel
+        final_alpha = np.zeros_like(alpha)
 
-        return mask, best_box
+        # 1. Mask the Main Object (keep its original soft alpha)
+        # We create a mask of the main object's outer boundary (Filled)
+        main_mask = np.zeros_like(alpha)
+        cv2.drawContours(main_mask, contours, best_idx, 255, cv2.FILLED)
+
+        # Copy original alpha ONLY where main_mask is present
+        # This removes other unrelated objects floating around
+        final_alpha = cv2.bitwise_and(alpha, alpha, mask=main_mask)
+
+        # 2. Smart Hole Filling
+        # Iterate through children (holes) of the best contour
+        main_area = cv2.contourArea(contours[best_idx])
+        # Threshold: Holes smaller than 2% of the object area are considered "details" and filled.
+        # Holes larger than 2% are considered "real background".
+        hole_threshold = main_area * 0.02
+
+        child_idx = hierarchy[best_idx][2]
+        while child_idx != -1:
+            hole_area = cv2.contourArea(contours[child_idx])
+
+            if hole_area < hole_threshold:
+                # Small hole -> It's a detail (false positive) -> FILL IT
+                # We draw it with 255 (opaque) on the final_alpha
+                cv2.drawContours(final_alpha, contours, child_idx, 255, cv2.FILLED)
+
+            # If large hole -> Do nothing (it remains transparent from the original alpha)
+
+            child_idx = hierarchy[child_idx][0]  # Next sibling
+
+        return final_alpha, best_box
 
     except Exception as e:
         print(f"Error in get_main_object_mask_and_box: {e}")
@@ -150,15 +189,10 @@ def center_object_postprocess(
         # Use cached session to avoid re-downloading/re-initializing
         session = get_rembg_session()
 
-        # alpha_matting=True improves the edge quality significantly
-        image_no_bg = remove(
-            image,
-            session=session,
-            alpha_matting=True,
-            alpha_matting_foreground_threshold=240,
-            alpha_matting_background_threshold=10,
-            alpha_matting_erode_size=10,
-        )
+        # We disable alpha_matting here because we want the raw prediction first.
+        # Alpha matting can sometimes erode small details.
+        # ISNet provides high quality alpha directly.
+        image_no_bg = remove(image, session=session, alpha_matting=False)
     except Exception as e:
         print(f"center_object postprocess: rembg failed: {e}")
         image.save(output_path)
@@ -168,30 +202,16 @@ def center_object_postprocess(
     result = get_main_object_mask_and_box(image_no_bg)
 
     if result:
-        mask, box = result
+        final_alpha, box = result
         x1, y1, x2, y2 = box
 
-        # Apply the clean mask to the image
-        # logic:
-        # 1. 'mask' is a binary mask of the main object (with holes).
-        # 2. We dilate it slightly to include the soft edges of the original alpha.
-        # 3. We use it to zero out other objects from the original alpha.
-
-        # Dilate the binary mask to cover the anti-aliased edges
-        kernel = np.ones((5, 5), np.uint8)
-        dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-
-        # Normalize to 0/1
-        keep_mask = (dilated_mask > 0).astype(np.uint8)
-
+        # Apply the refined alpha to the image
         img_np = np.array(image_no_bg)
-        # Multiply original alpha by keep_mask
-        # This preserves the soft alpha of the main object, but zeroes out everything else
-        img_np[:, :, 3] = img_np[:, :, 3] * keep_mask
+        img_np[:, :, 3] = final_alpha
 
         image_clean = Image.fromarray(img_np)
 
-        # Add a small padding?
+        # Crop with padding
         padding = 10
         x1 = max(0, x1 - padding)
         y1 = max(0, y1 - padding)
@@ -199,8 +219,6 @@ def center_object_postprocess(
         y2 = min(height, y2 + padding)
 
         print(f"Found Main Object at: {x1, y1, x2, y2}")
-
-        # Crop the image (the one with background removed AND cleaned)
         object_image = image_clean.crop((x1, y1, x2, y2))
     else:
         print("No distinct object found, using full image.")
