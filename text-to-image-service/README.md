@@ -294,27 +294,24 @@ This service can be driven entirely by a JSON configuration file named `pipeline
   - When `true`:
     - The SDXL pipeline generates the normal image.
     - A post-process step runs:
-      - If a `yolo_world_detector` module is available, it is used to detect the largest object box from the image and the original text prompt.
-      - Otherwise, a central bounding box is used (10% margin from each edge).
-      - The chosen region is cropped out and saved as a separate image:
-        - `<filename_prefix>_<timestamp>_object.png`
-      - If Segment Anything (SAM) is installed and its checkpoint exists at:
-        - `models/sam/sam_vit_h.pth`
-        - The code uses SAM to create a pixel-accurate mask and applies it as alpha.
+      - Uses `rembg` (U2Net) to remove the background from the image.
+      - Analyzes the alpha channel to find isolated objects.
+      - Selects the "Main Object" based on a heuristic of Size (Area) and Centrality.
+      - Crops the image to the main object bounds with a small padding.
+      - Saves as: `<filename_prefix>_<timestamp>_object.png`
   - When `false` or omitted:
     - Only the base SDXL image is generated (no object cutout).
 
-  To enable this feature, ensure you have installed the dependencies from `requirements.txt` (which includes `segment-anything`, `opencv-python`, and `numpy`).
+  To enable this feature, ensure you have installed the dependencies from `requirements.txt` (which includes `rembg` and `onnxruntime`).
 
-  Then download the SAM checkpoint into:
+  **About Object Segmentation:**
+  This feature uses **ISNet-General-Use** (via the `rembg` library), a state-of-the-art model for salient object detection.
+  - **High Quality Edges**: Uses alpha matting post-processing to ensure soft, anti-aliased edges (no jagged pixelation).
+  - **Smart Selection**: Identifies the main object using Connected Components Analysis (Islands) + Heuristics (Size/Centrality).
+  - **Hole Preservation**: Correctly handles transparent areas inside objects (e.g., handles, rings) by respecting the model's alpha output.
+  - The model file (`isnet-general-use.onnx`, ~179MB) downloads automatically on the first run.
 
-  ```bash
-  mkdir -p text-to-image-service/models/sam
-  # Place sam_vit_h.pth here:
-  # text-to-image-service/models/sam/sam_vit_h.pth
-  ```
-
-- `ksamplers`
+  - `ksamplers`
   - Shape:
     ```json
     "ksamplers": [

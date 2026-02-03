@@ -100,4 +100,6 @@ temp/
 *.ckpt
 *.pt
 *.pth
-*.bin
+
+# Rembg models
+**/models/u2net/

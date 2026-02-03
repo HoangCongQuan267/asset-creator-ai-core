@@ -13,6 +13,8 @@ from diffusers import (
 )
 from PIL import Image
 
+from post_processing import center_object_postprocess
+
 
 ROOT_DIR = Path(__file__).resolve().parent
 MODELS_DIR = ROOT_DIR / "models"
@@ -409,78 +411,6 @@ def build_pipeline(
                 pass
 
     return pipe
-
-
-def center_object_postprocess(
-    image, output_path: Path, text_prompt: str
-) -> Path | None:
-    width, height = image.width, image.height
-    margin_x = int(width * 0.1)
-    margin_y = int(height * 0.1)
-    x1_i = margin_x
-    y1_i = margin_y
-    x2_i = width - margin_x
-    y2_i = height - margin_y
-
-    try:
-        from yolo_world_detector import detect_largest_box
-    except ImportError:
-        print(
-            "center_object postprocess: yolo_world_detector module not found, using center crop"
-        )
-    else:
-        try:
-            box = detect_largest_box(image, text_prompt)
-        except Exception as e:
-            print(f"center_object postprocess: yolo_world_detector failed: {e}")
-        else:
-            if box is not None and len(box) == 4:
-                bx1, by1, bx2, by2 = box
-                x1_i = max(int(bx1), 0)
-                y1_i = max(int(by1), 0)
-                x2_i = min(int(bx2), width)
-                y2_i = min(int(by2), height)
-
-    if x2_i <= x1_i or y2_i <= y1_i:
-        x1_i, y1_i = 0, 0
-        x2_i, y2_i = width, height
-
-    object_image = image.crop((x1_i, y1_i, x2_i, y2_i))
-
-    try:
-        import numpy as np
-        from segment_anything import SamPredictor, sam_model_registry
-
-        sam_checkpoint_path = MODELS_DIR / "sam" / "sam_vit_h.pth"
-        if sam_checkpoint_path.is_file():
-            sam = sam_model_registry["vit_h"](checkpoint=str(sam_checkpoint_path))
-            predictor = SamPredictor(sam)
-            image_np = np.array(image)
-            predictor.set_image(image_np)
-            box_np = np.array([x1_i, y1_i, x2_i, y2_i], dtype=np.float32)
-            masks, scores, logits = predictor.predict(
-                box=box_np[None, :],
-                multimask_output=False,
-            )
-            if masks is not None and len(masks) > 0:
-                mask = masks[0].astype("uint8") * 255
-                mask_img = Image.fromarray(mask)
-                mask_crop = mask_img.crop((x1_i, y1_i, x2_i, y2_i))
-                object_rgba = object_image.convert("RGBA")
-                object_rgba.putalpha(mask_crop)
-                object_image = object_rgba
-    except ImportError:
-        print(
-            "center_object postprocess: segment_anything is not installed, using bounding box crop"
-        )
-    except Exception as e:
-        print(f"center_object postprocess SAM failed: {e}")
-
-    object_output_path = output_path.with_name(
-        f"{output_path.stem}_object{output_path.suffix}"
-    )
-    object_image.save(object_output_path)
-    return object_output_path
 
 
 def parse_args() -> argparse.Namespace:

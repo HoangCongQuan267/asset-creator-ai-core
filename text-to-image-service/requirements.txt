@@ -8,7 +8,6 @@ safetensors
 huggingface_hub
 # Optional for image processing
 opencv-python
+rembg
+onnxruntime
 numpy
-segment-anything
-ultralytics
-git+https://github.com/ultralytics/CLIP.git
