@@ -11,3 +11,5 @@ opencv-python
 rembg
 onnxruntime
 numpy
+transparent-background
+carvekit

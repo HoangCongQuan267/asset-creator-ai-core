@@ -1,41 +1,24 @@
 import os
+import sys
 from pathlib import Path
 from PIL import Image
 import numpy as np
 import cv2
+import torch
 
-# Set U2NET_HOME to project models directory to avoid permission issues
-# This must be done before importing rembg or running it
-os.environ["U2NET_HOME"] = str(Path(__file__).parent / "models" / "u2net")
-
-# Try importing dependencies early
 try:
-    from rembg import remove, new_session
+    from .remove_bg_service.server import process_with_inspyrenet, process_with_bria
 
-    REMBG_AVAILABLE = True
-except ImportError:
-    REMBG_AVAILABLE = False
+    INSPYRENET_AVAILABLE = True
+except ImportError as e:
+    # Try absolute import if relative fails (e.g. running script directly)
+    try:
+        from remove_bg_service.server import process_with_inspyrenet, process_with_bria
 
-# Global session cache to prevent re-initialization and re-download checks
-_SESSION = None
-
-
-def get_rembg_session():
-    global _SESSION
-    if _SESSION is None:
-        # Check if model exists to avoid unnecessary download attempts
-        # We now use 'isnet-general-use' as it is often better for general object segmentation
-        model_name = "isnet-general-use"
-        u2net_home = os.environ.get("U2NET_HOME")
-        if u2net_home:
-            # isnet-general-use saves as isnet-general-use.onnx
-            model_path = Path(u2net_home) / f"{model_name}.onnx"
-            if model_path.exists():
-                print(f"Using existing {model_name} model at: {model_path}")
-
-        # Initialize session (will download if missing)
-        _SESSION = new_session(model_name)
-    return _SESSION
+        INSPYRENET_AVAILABLE = True
+    except ImportError as e2:
+        print(f"Failed to import remove_bg_service: {e}, {e2}")
+        INSPYRENET_AVAILABLE = False
 
 
 def get_main_object_mask_and_box(image: Image.Image) -> tuple[np.ndarray, tuple] | None:
@@ -167,7 +150,7 @@ def center_object_postprocess(
     Post-processes the generated image to extract the central object.
 
     New Strategy (Reverse Method):
-    1. Remove Background (using Rembg).
+    1. Remove Background (using InSPyReNet via remove_bg_service module).
     2. Find connected components (islands).
     3. Select the 'Main' object (Largest + Central).
     4. Crop to that object.
@@ -175,26 +158,66 @@ def center_object_postprocess(
     """
     width, height = image.width, image.height
 
-    if not REMBG_AVAILABLE:
-        print("center_object postprocess: rembg not found. Please install it.")
+    if not INSPYRENET_AVAILABLE:
+        print("center_object postprocess: remove_bg_service not found.")
         # Fallback to simple center crop? Or just save original?
-        # Let's just return None to indicate failure or save original.
-        # For now, saving original as fallback.
         image.save(output_path)
         return output_path
 
-    print("Step 1: Removing Background...")
-    try:
-        # Rembg expects PIL image and returns PIL image (RGBA)
-        # Use cached session to avoid re-downloading/re-initializing
-        session = get_rembg_session()
+    print("Step 1: Removing Background (Parallel Ensemble)...")
 
-        # We disable alpha_matting here because we want the raw prediction first.
-        # Alpha matting can sometimes erode small details.
-        # ISNet provides high quality alpha directly.
-        image_no_bg = remove(image, session=session, alpha_matting=False)
+    # 1. Run Bria (Good for Salient Object Detection / Coarse Mask)
+    bria_image = None
+    try:
+        print("  - Running Bria...")
+        bria_image = process_with_bria(image)
     except Exception as e:
-        print(f"center_object postprocess: rembg failed: {e}")
+        print(f"  - Bria failed: {e}")
+
+    # 2. Run InSPyReNet (Good for High Quality Edges / Transparency)
+    inspyrenet_image = None
+    try:
+        print("  - Running InSPyReNet...")
+        inspyrenet_image = process_with_inspyrenet(image)
+    except Exception as e:
+        print(f"  - InSPyReNet failed: {e}")
+
+    # 3. Combine Results (Mask Guidance)
+    image_no_bg = None
+
+    if inspyrenet_image and bria_image:
+        print("  - Combining models: Using Bria to guide InSPyReNet...")
+        # Convert to numpy
+        inspy_np = np.array(inspyrenet_image)
+        bria_np = np.array(bria_image)
+
+        # Extract Alphas
+        inspy_alpha = inspy_np[:, :, 3]
+        bria_alpha = bria_np[:, :, 3]
+
+        # Dilate Bria mask slightly to ensure we don't clip InSPyReNet's fine details (hair/fur)
+        # We trust Bria for "Is the object here?" but trust InSPyReNet for "Where exactly is the edge?"
+        kernel = np.ones((15, 15), np.uint8)  # Moderate dilation
+        bria_mask_dilated = cv2.dilate(bria_alpha, kernel, iterations=1)
+
+        # Normalize to 0-1 for multiplication
+        mask_guidance = bria_mask_dilated.astype(float) / 255.0
+
+        # Apply guidance: Keep InSPyReNet alpha ONLY where Bria says there is likely an object (plus margin)
+        # This removes background clutter that InSPyReNet might have missed
+        final_alpha = inspy_alpha.astype(float) * mask_guidance
+
+        inspy_np[:, :, 3] = final_alpha.astype(np.uint8)
+        image_no_bg = Image.fromarray(inspy_np)
+
+    elif inspyrenet_image:
+        print("  - Using InSPyReNet result only.")
+        image_no_bg = inspyrenet_image
+    elif bria_image:
+        print("  - Using Bria result only (Fallback).")
+        image_no_bg = bria_image
+    else:
+        print("  - All BG removal failed.")
         image.save(output_path)
         return output_path
 

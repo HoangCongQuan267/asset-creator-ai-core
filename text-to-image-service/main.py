@@ -586,6 +586,9 @@ def run(args: argparse.Namespace) -> None:
                 "trending on artstation"
             )
 
+    if getattr(args, "center_object", False):
+        positive += ", high contrast background, solid background"
+
     negative_attr = getattr(args, "negative_prompt", None)
     if isinstance(negative_attr, str):
         negative = negative_attr.strip()
@@ -624,7 +627,9 @@ def run(args: argparse.Namespace) -> None:
     center_object = getattr(args, "center_object", False)
     if center_object:
         print(f"Center Object: {center_object}")
-        object_output_path = center_object_postprocess(image, output_path, positive)
+        object_output_path = center_object_postprocess(
+            image, output_path, positive, MODELS_DIR
+        )
         if object_output_path is not None:
             print(f"Object image saved to {object_output_path}")
 
