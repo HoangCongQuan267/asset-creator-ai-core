@@ -43,7 +43,8 @@ CIVITAI_LORA_IDS=(
     "128609:voxel_xl"
     "156373:game_icon"
     "183638:detail_enhance"
-    "134147:game_icon_institute_kuijia"
+    "141632:game_icon_institute_building_1"
+    "124082:institute_cartoon_emotion_icon_1"
 )
 
 index=1

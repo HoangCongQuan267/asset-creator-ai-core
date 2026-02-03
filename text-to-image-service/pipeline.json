@@ -2,8 +2,8 @@
   "loras": [],
   "doras": [],
   "prompt": {
-    "positive": "set of game icon, pet, flame, lava, hight detail, dragon, ash",
-    "negative": "things on forehead,(forehead jewel:1.1),bad quality,bad anatomy,blurry,stretched,deformed,bad lighting,EasyNegative,signature,watermark,text"
+    "positive": "[Palette: #2d3436, #0984e3, #6c5ce7] (single sword:1.3) fantasy sword, game asset, white background center frame",
+    "negative": "(multiple items:1.4), (collage:1.4) collage, collection, set, group, sprite sheet, multiple views, split screen, grid, border, frame, text, watermark, blurry, two objects, many items"
   },
   "latent": {
     "width": 1024,
@@ -13,15 +13,15 @@
   "steps": 30,
   "ksamplers": [
     {
-      "name": "base",
-      "model": "models/checkpoints/base_checkpoint.safetensors",
+      "name": "sdxl_base_128078",
+      "model": "models/checkpoints/sdxl_base_128078.safetensors",
       "add_noise": true,
       "noise_seed": 690326400695301,
       "cfg": 7,
       "sampler_name": "dpmpp_2m_sde",
       "scheduler": "exponential",
       "start_at_step": 0,
-      "end_at_step": 50
+      "end_at_step": 30
     }
   ],
   "output_dir": "outputs",
