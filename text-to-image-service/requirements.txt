@@ -13,3 +13,5 @@ onnxruntime
 numpy
 transparent-background
 carvekit
+pymatting
+opencv-contrib-python

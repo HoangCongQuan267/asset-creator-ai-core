@@ -1,6 +1,4 @@
 from PIL import Image
-import io
-import shutil
 import ssl
 import cv2
 
@@ -13,23 +11,23 @@ else:
     ssl._create_default_https_context = _create_unverified_https_context
 
 from rembg import remove as rembg_remove, new_session
-import time
 import numpy as np
-import tempfile
-import uuid
 import os
-import subprocess
 from transformers import pipeline
 from transparent_background import Remover
 import logging
-import asyncio
-from datetime import datetime, timedelta
 import torch
 from .ormbg import ORMBGProcessor
-from typing import Dict
-from contextlib import contextmanager
 
 from carvekit.ml.files.models_loc import download_all
+
+from pymatting import (
+    estimate_alpha_cf,
+    estimate_foreground_ml,
+    stack_images,
+    load_image,
+)
+
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -253,171 +251,146 @@ def get_largest_component_mask(alpha_mask):
     return cv2.bitwise_and(alpha_mask, mask_dilated)
 
 
+def closed_form_refinement(image_pil, alpha_pil):
+    image = np.asarray(image_pil.convert("RGB")).astype(np.float64) / 255.0
+    alpha = np.asarray(alpha_pil).astype(np.float64) / 255.0
+
+    # Build trimap (0, 0.5, 1)
+    trimap = np.full_like(alpha, 0.5, dtype=np.float64)
+    trimap[alpha > 0.98] = 1.0
+    trimap[alpha < 0.02] = 0.0
+
+    refined_alpha = estimate_alpha_cf(image, trimap)
+
+    refined_alpha = np.clip(refined_alpha, 0, 1)
+
+    return Image.fromarray((refined_alpha * 255).astype(np.uint8))
+
+
+def guided_filter_refinement(image_pil, alpha_pil):
+    image = np.array(image_pil.convert("RGB"))
+    alpha = np.array(alpha_pil).astype(np.float32) / 255.0
+
+    guide = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+
+    radius = 6
+    eps = 1e-4
+
+    refined = cv2.ximgproc.guidedFilter(
+        guide=guide,
+        src=alpha,
+        radius=radius,
+        eps=eps,
+    )
+
+    refined = np.clip(refined, 0, 1)
+
+    return Image.fromarray((refined * 255).astype(np.uint8))
+
+
+def subpixel_hair_enhancement(alpha_pil):
+    alpha = np.array(alpha_pil).astype(np.float32) / 255.0
+
+    # Target only soft hair region
+    hair_zone = (alpha > 0.15) & (alpha < 0.85)
+
+    enhanced = alpha.copy()
+    enhanced[hair_zone] = np.power(enhanced[hair_zone], 0.85)
+
+    # Convert to float32 for Laplacian
+    enhanced_32 = enhanced.astype(np.float32)
+    laplacian = cv2.Laplacian(enhanced_32, cv2.CV_32F)
+
+    enhanced = np.clip(enhanced - 0.08 * laplacian, 0, 1)
+
+    return Image.fromarray((enhanced * 255).astype(np.uint8))
+
+
 def process_with_hybrid_matting(image):
     """
-    State-of-the-Art Pipeline:
-    1. Segmentation: Union of ORMBG + InSPyReNet (Robustness)
-    2. Filtering: Keep Largest Component (Remove noise islands)
-    3. Trimap Generation: Erode/Dilate Combined mask
-    4. Alpha Matting: FBA Matting (Seamless edges/transparency)
+    Hybrid matting with SHARP edge refinement.
+    Preserves hair while producing razor outline.
     """
-    # 1. Get ORMBG Mask
+
+    # 1️⃣ ORMBG
     ormbg_result = process_with_ormbg(image)
+    ormbg_alpha = np.array(ormbg_result)[:, :, 3]
 
-    # Extract Alpha
-    ormbg_np = np.array(ormbg_result)
-    ormbg_alpha = ormbg_np[:, :, 3]
-
-    # 2. Get InSPyReNet Mask (for robustness - recovers missing body parts)
+    # 2️⃣ InSPyReNet (optional union)
     try:
         inspyre_result = process_with_inspyrenet(image)
-        inspyre_np = np.array(inspyre_result)
-        inspyre_alpha = inspyre_np[:, :, 3]
-
-        # Union Strategy: Max(ORMBG, InSPyReNet)
-        # This ensures we don't lose body parts that one model misses
+        inspyre_alpha = np.array(inspyre_result)[:, :, 3]
         combined_alpha = np.maximum(ormbg_alpha, inspyre_alpha)
-        logger.info("Hybrid Matting: Combined ORMBG + InSPyReNet masks")
+        logger.info("Hybrid Matting: Combined ORMBG + InSPyReNet")
     except Exception as e:
-        logger.warning(f"Hybrid Matting: InSPyReNet fallback failed: {e}")
+        logger.warning(f"InSPyReNet fallback: {e}")
         combined_alpha = ormbg_alpha
 
-    # 3. Clean up: Keep only the largest object (Main Character)
-    # This removes floating background blobs ("islands") that are not connected to the body.
+    # 3️⃣ Remove noise islands
     combined_alpha = get_largest_component_mask(combined_alpha)
 
-    # 3. Generate Trimap from Combined Alpha
-    # Trimap values: 0=BG, 128=Unknown, 255=FG
+    # 4️⃣ Build Trimap
+    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
 
-    # Define Trimap based on the ROBUST combined mask
-    trimap = np.zeros_like(combined_alpha)
-    trimap[combined_alpha > 10] = 128  # Potential FG
-    trimap[combined_alpha > 240] = 255  # Definite FG
+    fg_mask = cv2.erode(combined_alpha, erode_kernel, iterations=1)
+    bg_mask = cv2.dilate(combined_alpha, dilate_kernel, iterations=1)
 
-    # Improve Trimap with Morphological Operations
-    # STRATEGY:
-    # 1. Erode slightly (Definite FG) -> Protects the solid body.
-    # 2. Dilate significantly (Definite BG boundary) -> Captures loose hair/edges.
-
-    # Kernel for Erosion (Definite FG)
-    # Smaller kernel = Less erosion = More body parts marked as "Definite FG" (Protected)
-    erode_size = 5
-    kernel_erode = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (erode_size, erode_size)
-    )
-    fg_mask = cv2.erode(combined_alpha, kernel_erode, iterations=1)
-
-    # Kernel for Dilation (Definite BG)
-    # Larger kernel = Wider "Unknown" area outside = Better chance to catch hair
-    # Adjusted to 10 (was 15) to tighten the trimap and reduce background halo
-    dilate_size = 10
-    kernel_dilate = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (dilate_size, dilate_size)
-    )
-    bg_mask_dilated = cv2.dilate(combined_alpha, kernel_dilate, iterations=1)
-
-    # Construct Trimap
-    trimap = np.zeros_like(combined_alpha)
-    trimap[:] = 128  # Default to Unknown
-
-    # Set Definite FG (255) where eroded mask is high
+    trimap = np.full_like(combined_alpha, 128)
     trimap[fg_mask > 240] = 255
+    trimap[bg_mask < 10] = 0
 
-    # Set Definite BG (0) where dilated mask is low
-    trimap[bg_mask_dilated < 10] = 0
-
-    # 4. Run FBA Matting
-    fba_model = get_fba_model()
-
-    # FBA Matting expects:
-    # - images: List of PIL Images (RGB)
-    # - trimaps: List of PIL Images (Grayscale)
-
-    # Convert trimap to PIL
     trimap_pil = Image.fromarray(trimap)
-
-    # Ensure image is RGB
     image_rgb = image.convert("RGB")
 
-    # Inference
+    # 5️⃣ FBA Matting
+    fba_model = get_fba_model()
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
     if device == "cuda":
         fba_model.to(device)
 
     try:
-        # FBA Matting returns a list of Grayscale images (Alpha masks)
         matte_result = fba_model([image_rgb], [trimap_pil])[0]
 
-        # --- Post-FBA Cleanup (The "Trick") ---
-        matte_np = np.array(matte_result)
+        # =========================
+        # 🔥 SHARP EDGE REFINEMENT
+        # =========================
 
-        # 1. Morphological Erosion (The "Choke")
-        # Physically shrink the mask by 1 pixel to eat away the contaminated edge.
-        # This removes the "white halo" pixels entirely by forcing them into the background.
-        kernel_choke = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        matte_np = cv2.erode(matte_np, kernel_choke, iterations=1)
+        alpha = np.array(matte_result).astype(np.float32) / 255.0
+        rgb = np.array(image_rgb).astype(np.float32) / 255.0
 
-        # 2. Levels Adjustment (Sharpen Lines)
-        # Instead of simple Gamma, we use a sigmoid-like curve to force pixels
-        # to either 0 (transparent) or 255 (opaque), leaving only a thin anti-aliased edge.
-        # This fixes the "blurry edge" issue.
+        # ---- 1️⃣ Detect REAL image edges ----
+        gray = cv2.cvtColor((rgb * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray, 80, 160)
+        edges = edges.astype(np.float32) / 255.0
 
-        # Normalize to 0-1
-        alpha_float = matte_np.astype(np.float32) / 255.0
+        edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.dilate(edges, edge_kernel, iterations=1)
 
-        # Hard Thresholding with Soft Edges (S-Curve)
-        # Input: 0.0 - 0.6 -> 0.0 (Clean Background) - VERY AGGRESSIVE DE-FOG
-        # Input: 0.6 - 0.95 -> Steep Slope (Sharp Edge)
-        # Input: 0.95 - 1.0 -> 1.0 (Solid Body)
+        # ---- 2️⃣ Edge-locked sharpening ----
+        laplacian = cv2.Laplacian(alpha.astype(np.float32), cv2.CV_32F)
+        alpha = alpha - 0.22 * laplacian * edges
+        alpha = np.clip(alpha, 0.0, 1.0)
 
-        # We set lower_threshold to 0.6 to kill ALL faint fog/halo.
-        # We set upper_threshold to 0.95 to ensure only the VERY solid parts are opaque.
+        # ---- 3️⃣ Snap strong areas ----
+        alpha[alpha > 0.93] = 1.0
+        alpha[alpha < 0.015] = 0.0
 
-        lower_threshold = 0.6
-        upper_threshold = 0.95
+        # ---- 4️⃣ Preserve hair gradients (no blur) ----
+        hair_zone = (alpha > 0.08) & (alpha < 0.9)
+        alpha[hair_zone] = np.power(alpha[hair_zone], 0.85)
 
-        # Rescale the range [0.6, 0.95] to [0.0, 1.0]
-        alpha_float = (alpha_float - lower_threshold) / (
-            upper_threshold - lower_threshold
-        )
+        # ---- 5️⃣ Remove micro noise only ----
+        alpha_uint8 = (alpha * 255).astype(np.uint8)
+        alpha_uint8 = get_largest_component_mask(alpha_uint8)
 
-        # Clamp to [0, 1]
-        alpha_float = np.clip(alpha_float, 0.0, 1.0)
+        # ---- 6️⃣ Composite ----
+        result = Image.fromarray((rgb * 255).astype(np.uint8)).convert("RGBA")
+        result.putalpha(Image.fromarray(alpha_uint8))
 
-        # Convert back to uint8
-        matte_np = (alpha_float * 255.0).astype(np.uint8)
+        return result
 
-        # 3. Haze Removal: Threshold faint pixels (Already covered by lower_threshold above)
-        # But let's keep a small safety check for floating point errors
-        matte_np[matte_np < 10] = 0
-
-        # 4. Safety Net: Enforce Boundary
-        if matte_np.shape == bg_mask_dilated.shape:
-            matte_np = cv2.bitwise_and(matte_np, bg_mask_dilated)
-
-        # 5. Core Restoration: Enforce Solidity
-        # We trust the original eroded mask for the DEEP core.
-        # But we also want to trust the S-Curve result for the "almost core".
-        matte_np = np.maximum(matte_np, fg_mask)
-
-        # 6. Final Cleanup: Keep Largest Component AGAIN
-        # FBA Matting might have hallucinated some disconnected blobs in the trimap area.
-        matte_np = get_largest_component_mask(matte_np)
-
-        # Use original RGB (No Inpainting/Smearing)
-        # The Inpainting caused "froggy" artifacts again.
-        # We rely on "Choke" (Erosion) + High Thresholds to kill the halo.
-        img_np = np.array(image.convert("RGB"))
-        cleaned_rgb = img_np
-
-        # Convert back to PIL
-        matte_result = Image.fromarray(matte_np)
-
-        # Composite Cleaned RGB with Refined Alpha
-        no_bg_image = Image.fromarray(cleaned_rgb).convert("RGBA")
-        no_bg_image.putalpha(matte_result)
-
-        return no_bg_image
     finally:
         if device == "cuda":
             fba_model.to("cpu")
