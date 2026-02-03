@@ -217,12 +217,49 @@ def process_with_rembg(image, model="u2net"):
     return rembg_remove(image, session=session)
 
 
+def get_largest_component_mask(alpha_mask):
+    """
+    Keeps only the largest connected component in the alpha mask.
+    Removes floating noise islands.
+    """
+    # Threshold to binary
+    _, binary = cv2.threshold(alpha_mask, 127, 255, cv2.THRESH_BINARY)
+
+    # Find connected components
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+
+    # If no components (empty image), return original
+    if num_labels <= 1:
+        return alpha_mask
+
+    # Find largest component (ignoring background at index 0)
+    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+
+    # Create mask for largest component
+    mask = np.zeros_like(alpha_mask)
+    mask[labels == largest_label] = 255
+
+    # Apply mask to original alpha
+    # We use the binary mask to clip the original alpha
+    # But we want to preserve the soft edges of the largest component.
+    # So we dilate the binary mask slightly to include the soft edges of the main object
+    # and then mask the original alpha.
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_dilated = cv2.dilate(mask, kernel, iterations=2)
+
+    return cv2.bitwise_and(alpha_mask, mask_dilated)
+
+
 def process_with_hybrid_matting(image):
     """
     State-of-the-Art Pipeline:
     1. Segmentation: Union of ORMBG + InSPyReNet (Robustness)
-    2. Trimap Generation: Erode/Dilate Combined mask
-    3. Alpha Matting: FBA Matting (Seamless edges/transparency)
+    2. Filtering: Keep Largest Component (Remove noise islands)
+    3. Trimap Generation: Erode/Dilate Combined mask
+    4. Alpha Matting: FBA Matting (Seamless edges/transparency)
     """
     # 1. Get ORMBG Mask
     ormbg_result = process_with_ormbg(image)
@@ -230,8 +267,6 @@ def process_with_hybrid_matting(image):
     # Extract Alpha
     ormbg_np = np.array(ormbg_result)
     ormbg_alpha = ormbg_np[:, :, 3]
-
-    combined_alpha = ormbg_alpha
 
     # 2. Get InSPyReNet Mask (for robustness - recovers missing body parts)
     try:
@@ -245,6 +280,11 @@ def process_with_hybrid_matting(image):
         logger.info("Hybrid Matting: Combined ORMBG + InSPyReNet masks")
     except Exception as e:
         logger.warning(f"Hybrid Matting: InSPyReNet fallback failed: {e}")
+        combined_alpha = ormbg_alpha
+
+    # 3. Clean up: Keep only the largest object (Main Character)
+    # This removes floating background blobs ("islands") that are not connected to the body.
+    combined_alpha = get_largest_component_mask(combined_alpha)
 
     # 3. Generate Trimap from Combined Alpha
     # Trimap values: 0=BG, 128=Unknown, 255=FG
@@ -255,15 +295,26 @@ def process_with_hybrid_matting(image):
     trimap[combined_alpha > 240] = 255  # Definite FG
 
     # Improve Trimap with Morphological Operations
-    # Erode to find definite foreground
-    kernel_size = 10
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    # STRATEGY:
+    # 1. Erode slightly (Definite FG) -> Protects the solid body.
+    # 2. Dilate significantly (Definite BG boundary) -> Captures loose hair/edges.
 
-    # Definite FG: Erode the COMBINED mask
-    fg_mask = cv2.erode(combined_alpha, kernel, iterations=1)
+    # Kernel for Erosion (Definite FG)
+    # Smaller kernel = Less erosion = More body parts marked as "Definite FG" (Protected)
+    erode_size = 5
+    kernel_erode = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (erode_size, erode_size)
+    )
+    fg_mask = cv2.erode(combined_alpha, kernel_erode, iterations=1)
 
-    # Definite BG: Dilate the COMBINED mask (inverse is BG)
-    bg_mask_dilated = cv2.dilate(combined_alpha, kernel, iterations=1)
+    # Kernel for Dilation (Definite BG)
+    # Larger kernel = Wider "Unknown" area outside = Better chance to catch hair
+    # Adjusted to 10 (was 15) to tighten the trimap and reduce background halo
+    dilate_size = 10
+    kernel_dilate = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dilate_size, dilate_size)
+    )
+    bg_mask_dilated = cv2.dilate(combined_alpha, kernel_dilate, iterations=1)
 
     # Construct Trimap
     trimap = np.zeros_like(combined_alpha)
@@ -297,8 +348,41 @@ def process_with_hybrid_matting(image):
         # FBA Matting returns a list of Grayscale images (Alpha masks)
         matte_result = fba_model([image_rgb], [trimap_pil])[0]
 
-        # Composite with original image to get RGBA result
-        no_bg_image = image.convert("RGBA")
+        # --- Post-FBA Cleanup (The "Trick") ---
+        matte_np = np.array(matte_result)
+
+        # 1. Gamma Correction (De-Halo): Push semi-transparent pixels towards 0
+        # Reduced Gamma to 2.0 (was 2.5) to be effective but less harsh.
+        # This hides the "contaminated" pixels by making them fully transparent.
+        alpha_float = matte_np.astype(np.float32) / 255.0
+        alpha_float = np.power(alpha_float, 2.0)
+        matte_np = (alpha_float * 255.0).astype(np.uint8)
+
+        # 2. Haze Removal: Threshold faint pixels
+        matte_np[matte_np < 20] = 0
+
+        # 3. Safety Net: Enforce Boundary
+        if matte_np.shape == bg_mask_dilated.shape:
+            matte_np = cv2.bitwise_and(matte_np, bg_mask_dilated)
+
+        # 4. Core Restoration: Enforce Solidity
+        matte_np = np.maximum(matte_np, fg_mask)
+
+        # 5. Final Cleanup: Keep Largest Component AGAIN
+        # FBA Matting might have hallucinated some disconnected blobs in the trimap area.
+        matte_np = get_largest_component_mask(matte_np)
+
+        # Use original RGB (No Inpainting/Smearing)
+        # The "Color Extension" caused "frog" (fog/halo) artifacts.
+        # We rely on Gamma Correction to hide the background halo.
+        img_np = np.array(image.convert("RGB"))
+        cleaned_rgb = img_np
+
+        # Convert back to PIL
+        matte_result = Image.fromarray(matte_np)
+
+        # Composite Cleaned RGB with Refined Alpha
+        no_bg_image = Image.fromarray(cleaned_rgb).convert("RGBA")
         no_bg_image.putalpha(matte_result)
 
         return no_bg_image
