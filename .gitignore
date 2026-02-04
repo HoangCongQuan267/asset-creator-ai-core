@@ -6,6 +6,7 @@ __pycache__/
 .Python
 build/
 text-to-image-service/outputs/
+text-to-image-service/remove_bg_service/debug_masks/
 develop-eggs/
 dist/
 downloads/
