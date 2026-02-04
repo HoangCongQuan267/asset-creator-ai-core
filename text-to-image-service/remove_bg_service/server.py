@@ -190,13 +190,11 @@ def process_with_inspyrenet(image):
     model = get_inspyrenet_model()
     device = get_device()
 
-    # Ensure model is on correct device
     if hasattr(model, "model"):
         model.model.to(device)
 
     result = model.process(image, type="rgba")
 
-    # Move back to CPU to save VRAM
     if hasattr(model, "model"):
         model.model.cpu()
 
@@ -208,7 +206,31 @@ def process_with_inspyrenet(image):
         except AttributeError:
             pass  # torch.mps.empty_cache might not exist in older versions
 
-    return result
+    if isinstance(result, Image.Image):
+        rgba = result
+    else:
+        rgba = Image.fromarray(result)
+
+    rgb = image.convert("RGB")
+    alpha = np.array(rgba)[:, :, 3].astype(np.float32) / 255.0
+
+    largest = (
+        get_largest_component_mask((alpha * 255).astype(np.uint8)).astype(np.float32)
+        / 255.0
+    )
+
+    interior = largest > 0.7
+    largest[interior] *= 1.15
+    largest = np.clip(largest, 0.0, 1.0)
+
+    largest[largest < 0.01] = 0.0
+    largest[largest > 0.995] = 1.0
+
+    alpha_uint8 = (largest * 255).astype(np.uint8)
+
+    output = rgb.convert("RGBA")
+    output.putalpha(Image.fromarray(alpha_uint8))
+    return output
 
 
 def process_with_rembg(image, model="u2net"):
