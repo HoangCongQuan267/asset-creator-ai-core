@@ -13,6 +13,7 @@ else:
 from rembg import remove as rembg_remove, new_session
 import numpy as np
 import os
+import time
 from transformers import pipeline
 from transparent_background import Remover
 import logging
@@ -512,42 +513,43 @@ def subpixel_hair_enhancement(alpha_pil):
 
 def process_with_hybrid_matting(image):
     """
-    Hybrid matting with SHARP edge refinement.
-    Preserves hair while producing razor outline.
+    Clean hybrid matting:
+    - Strong segmentation
+    - Hair-safe trimap
+    - FBA matting
+    - Gentle interior promotion
+    - NO destructive post-processing
     """
 
-    # 1️⃣ ORMBG
-    ormbg_result = process_with_ormbg(image)
-    ormbg_alpha = np.array(ormbg_result)[:, :, 3]
-
-    # 2️⃣ InSPyReNet (optional union)
     try:
         inspyre_result = process_with_inspyrenet(image)
-        inspyre_alpha = np.array(inspyre_result)[:, :, 3]
-        combined_alpha = np.maximum(ormbg_alpha, inspyre_alpha)
-        logger.info("Hybrid Matting: Combined ORMBG + InSPyReNet")
+
+        base_alpha = np.array(inspyre_result)[:, :, 3]
+        debug_dir = os.path.join(os.path.dirname(__file__), "debug_masks")
+        os.makedirs(debug_dir, exist_ok=True)
+        timestamp = int(time.time() * 1000)
+        debug_path = os.path.join(debug_dir, f"inspyre_mask_{timestamp}.png")
+        Image.fromarray(base_alpha).save(debug_path)
+        logger.info("Hybrid Matting: Using InSPyReNet alpha")
     except Exception as e:
-        logger.warning(f"InSPyReNet fallback: {e}")
-        combined_alpha = ormbg_alpha
+        logger.warning(f"InSPyReNet fallback to ORMBG: {e}")
+        ormbg_result = process_with_ormbg(image)
+        base_alpha = np.array(ormbg_result)[:, :, 3]
 
-    # 3️⃣ Remove noise islands
-    combined_alpha = get_largest_component_mask(combined_alpha)
+    # 2️⃣ Remove noise BEFORE matting (safe)
+    base_alpha = get_largest_component_mask(base_alpha)
 
-    # 4️⃣ Build Trimap
-    erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+    # 3️⃣ Build HAIR-SAFE trimap (NO erode/dilate)
+    alpha_norm = base_alpha.astype(np.float32) / 255.0
 
-    fg_mask = cv2.erode(combined_alpha, erode_kernel, iterations=1)
-    bg_mask = cv2.dilate(combined_alpha, dilate_kernel, iterations=1)
-
-    trimap = np.full_like(combined_alpha, 128)
-    trimap[fg_mask > 240] = 255
-    trimap[bg_mask < 10] = 0
+    trimap = np.full_like(base_alpha, 128, dtype=np.uint8)
+    trimap[alpha_norm > 0.9] = 255  # confident foreground
+    trimap[alpha_norm < 0.05] = 0  # confident background
 
     trimap_pil = Image.fromarray(trimap)
     image_rgb = image.convert("RGB")
 
-    # 5️⃣ FBA Matting
+    # 4️⃣ Run FBA matting
     fba_model = get_fba_model()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -557,45 +559,30 @@ def process_with_hybrid_matting(image):
     try:
         matte_result = fba_model([image_rgb], [trimap_pil])[0]
 
-        # =========================
-        # 🔥 SHARP EDGE REFINEMENT
-        # =========================
-
         alpha = np.array(matte_result).astype(np.float32) / 255.0
-        rgb = np.array(image_rgb).astype(np.float32) / 255.0
 
-        # ---- 1️⃣ Detect REAL image edges ----
-        gray = cv2.cvtColor((rgb * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 80, 160)
-        edges = edges.astype(np.float32) / 255.0
+        # ===============================
+        # 🔥 SAFE INTERIOR PROMOTION
+        # ===============================
 
-        edge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        edges = cv2.dilate(edges, edge_kernel, iterations=1)
+        # Promote confident interior (fix missing skin)
+        interior = alpha > 0.6
+        alpha[interior] *= 1.15
 
-        # ---- 2️⃣ Edge-locked sharpening ----
-        laplacian = cv2.Laplacian(alpha.astype(np.float32), cv2.CV_32F)
-        alpha = alpha - 0.22 * laplacian * edges
         alpha = np.clip(alpha, 0.0, 1.0)
 
-        # ---- 3️⃣ Snap strong areas ----
-        alpha[alpha > 0.93] = 1.0
-        alpha[alpha < 0.015] = 0.0
+        # Very soft snap only
+        alpha[alpha < 0.02] = 0.0
+        alpha[alpha > 0.98] = 1.0
 
-        # ---- 4️⃣ Preserve hair gradients (no blur) ----
-        hair_zone = (alpha > 0.08) & (alpha < 0.9)
-        alpha[hair_zone] = np.power(alpha[hair_zone], 0.85)
-
-        alpha = color_consistency_refinement(alpha, rgb)
-        alpha = grabcut_refinement((rgb * 255.0).astype(np.uint8), alpha)
-        alpha = edge_boundary_refinement((rgb * 255.0).astype(np.uint8), alpha)
-        alpha = alpha_boundary_clamp(alpha)
-
-        alpha[alpha < 0.25] = 0.0
         alpha_uint8 = (alpha * 255).astype(np.uint8)
-        alpha_uint8 = get_largest_component_mask(alpha_uint8)
 
-        # ---- 6️⃣ Composite ----
-        result = Image.fromarray((rgb * 255).astype(np.uint8)).convert("RGBA")
+        # ⚠️ DO NOT run largest component here
+        # ⚠️ DO NOT run grabcut
+        # ⚠️ DO NOT run boundary clamp
+        # ⚠️ DO NOT run edge refinement
+
+        result = image_rgb.convert("RGBA")
         result.putalpha(Image.fromarray(alpha_uint8))
 
         return result

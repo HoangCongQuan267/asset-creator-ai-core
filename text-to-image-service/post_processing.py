@@ -201,27 +201,12 @@ def center_object_postprocess(
     except Exception as e:
         print(f"  - Hybrid Matting failed: {e}")
 
-    if rembg_hq is not None and hybrid is not None:
-        if rembg_hq.mode != "RGBA":
-            rembg_hq = rembg_hq.convert("RGBA")
+    if hybrid is not None:
         if hybrid.mode != "RGBA":
             hybrid = hybrid.convert("RGBA")
-
-        alpha_rembg = np.array(rembg_hq)[:, :, 3].astype(np.float32) / 255.0
-        alpha_hybrid = np.array(hybrid)[:, :, 3].astype(np.float32) / 255.0
-
-        outside = (alpha_rembg < 0.05) | (alpha_hybrid < 0.05)
-        combined_alpha = np.maximum(alpha_rembg, alpha_hybrid)
-        combined_alpha[outside] = 0.0
-        combined_alpha = np.clip(combined_alpha, 0.0, 1.0)
-
-        combined_rgba = image.convert("RGBA")
-        combined_rgba.putalpha(Image.fromarray((combined_alpha * 255).astype(np.uint8)))
-        image_no_bg = combined_rgba
+        image_no_bg = hybrid
     elif rembg_hq is not None:
         image_no_bg = rembg_hq
-    elif hybrid is not None:
-        image_no_bg = hybrid
 
     # Priority 2: ORMBG (State-of-the-art Open Source, similar to Remove.bg)
     if image_no_bg is None:
