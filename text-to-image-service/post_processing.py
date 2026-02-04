@@ -12,6 +12,7 @@ try:
         process_with_bria,
         process_with_ormbg,
         process_with_hybrid_matting,
+        process_with_rembg_hq,
     )
 
     INSPYRENET_AVAILABLE = True
@@ -23,6 +24,7 @@ except ImportError as e:
             process_with_bria,
             process_with_ormbg,
             process_with_hybrid_matting,
+            process_with_rembg_hq,
         )
 
         INSPYRENET_AVAILABLE = True
@@ -182,13 +184,44 @@ def center_object_postprocess(
     print("Step 1: Removing Background (Prioritized Strategy)...")
     image_no_bg = None
 
+    rembg_hq = None
+    hybrid = None
+
+    try:
+        print("  - Attempting Remove.bg-like Rembg HQ...")
+        rembg_hq = process_with_rembg_hq(image)
+    except Exception as e:
+        print(f"  - Rembg HQ failed: {e}")
+
     # Priority 1: Hybrid Matting (ORMBG + FBA Matting) - The "Secret Sauce"
     # This aligns with the user's request for "Alpha Matting" and "Refinement Loops".
     try:
         print("  - Attempting Hybrid Matting (ORMBG + FBA Matting)...")
-        image_no_bg = process_with_hybrid_matting(image)
+        hybrid = process_with_hybrid_matting(image)
     except Exception as e:
         print(f"  - Hybrid Matting failed: {e}")
+
+    if rembg_hq is not None and hybrid is not None:
+        if rembg_hq.mode != "RGBA":
+            rembg_hq = rembg_hq.convert("RGBA")
+        if hybrid.mode != "RGBA":
+            hybrid = hybrid.convert("RGBA")
+
+        alpha_rembg = np.array(rembg_hq)[:, :, 3].astype(np.float32) / 255.0
+        alpha_hybrid = np.array(hybrid)[:, :, 3].astype(np.float32) / 255.0
+
+        outside = (alpha_rembg < 0.05) | (alpha_hybrid < 0.05)
+        combined_alpha = np.maximum(alpha_rembg, alpha_hybrid)
+        combined_alpha[outside] = 0.0
+        combined_alpha = np.clip(combined_alpha, 0.0, 1.0)
+
+        combined_rgba = image.convert("RGBA")
+        combined_rgba.putalpha(Image.fromarray((combined_alpha * 255).astype(np.uint8)))
+        image_no_bg = combined_rgba
+    elif rembg_hq is not None:
+        image_no_bg = rembg_hq
+    elif hybrid is not None:
+        image_no_bg = hybrid
 
     # Priority 2: ORMBG (State-of-the-art Open Source, similar to Remove.bg)
     if image_no_bg is None:
@@ -240,10 +273,21 @@ def center_object_postprocess(
         print(f"Error during cropping: {e}")
         object_image = image_no_bg
 
-    # 3. Save
-    # If output_path is provided, we save relative to it.
+    if object_image.mode != "RGBA":
+        object_image = object_image.convert("RGBA")
+
+    alpha = np.array(object_image.split()[-1])
+    mask = np.zeros_like(alpha, dtype=np.uint8)
+    mask[alpha > 0] = 255
+
     object_output_path = output_path.with_name(
         f"{output_path.stem}_object{output_path.suffix}"
     )
+    mask_output_path = output_path.with_name(
+        f"{output_path.stem}_object_mask{output_path.suffix}"
+    )
+
     object_image.save(object_output_path)
+    Image.fromarray(mask, mode="L").save(mask_output_path)
+
     return object_output_path

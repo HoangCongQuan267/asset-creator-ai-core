@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 
 # Path to the image
-IMAGE_PATH="/Users/hoangcongquan/Documents/asset-creator-ai-core/text-to-image-service/outputs/00226-113795875.png"
+IMAGE_PATH="/Users/hoangcongquan/Documents/asset-creator-ai-core/text-to-image-service/outputs/00086.png"
 
 # Prompt for the object detection (assuming 'sword' based on the image content)
 PROMPT="sword"

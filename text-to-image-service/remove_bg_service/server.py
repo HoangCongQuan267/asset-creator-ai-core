@@ -215,6 +215,27 @@ def process_with_rembg(image, model="u2net"):
     return rembg_remove(image, session=session)
 
 
+def process_with_rembg_hq(image):
+    try:
+        result = process_with_rembg(image, model="isnet-general-use")
+    except Exception:
+        result = process_with_rembg(image, model="u2net")
+
+    if result.mode != "RGBA":
+        result = result.convert("RGBA")
+
+    rgb = image.convert("RGB")
+    alpha = np.array(result)[:, :, 3]
+    refined_alpha = closed_form_refinement(rgb, Image.fromarray(alpha))
+    alpha_uint8 = np.array(refined_alpha)
+    alpha_uint8 = defringe_alpha(alpha_uint8)
+    alpha_uint8 = get_largest_component_mask(alpha_uint8)
+
+    output = Image.fromarray(np.array(rgb)).convert("RGBA")
+    output.putalpha(Image.fromarray(alpha_uint8))
+    return output
+
+
 def get_largest_component_mask(alpha_mask):
     """
     Keeps only the largest connected component in the alpha mask.
@@ -249,6 +270,26 @@ def get_largest_component_mask(alpha_mask):
     mask_dilated = cv2.dilate(mask, kernel, iterations=2)
 
     return cv2.bitwise_and(alpha_mask, mask_dilated)
+
+
+def defringe_alpha(alpha_uint8):
+    alpha = alpha_uint8.astype(np.float32) / 255.0
+    edge_band = (alpha > 0.03) & (alpha < 0.65)
+    alpha[edge_band] = np.power(alpha[edge_band], 2.4)
+
+    laplacian = cv2.Laplacian(alpha.astype(np.float32), cv2.CV_32F)
+    sharpen_band = (alpha > 0.35) & (alpha < 0.95)
+    alpha[sharpen_band] = np.clip(
+        alpha[sharpen_band] - 0.35 * laplacian[sharpen_band], 0.0, 1.0
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    edge = cv2.morphologyEx((alpha > 0.01).astype(np.uint8), cv2.MORPH_GRADIENT, kernel)
+    alpha = np.clip(alpha - edge.astype(np.float32) * 0.12, 0.0, 1.0)
+
+    alpha[alpha < 0.02] = 0.0
+    alpha[alpha > 0.96] = 1.0
+    return (alpha * 255).astype(np.uint8)
 
 
 def closed_form_refinement(image_pil, alpha_pil):
@@ -286,6 +327,169 @@ def guided_filter_refinement(image_pil, alpha_pil):
     refined = np.clip(refined, 0, 1)
 
     return Image.fromarray((refined * 255).astype(np.uint8))
+
+
+def color_consistency_refinement(alpha, rgb):
+    alpha = alpha.astype(np.float32)
+    rgb = rgb.astype(np.float32)
+
+    fg_mask = alpha > 0.97
+    bg_mask = alpha < 0.03
+
+    if fg_mask.sum() < 50 or bg_mask.sum() < 50:
+        return alpha
+
+    fg_colors = rgb[fg_mask]
+    bg_colors = rgb[bg_mask]
+
+    fg_mean = fg_colors.mean(axis=0)
+    bg_mean = bg_colors.mean(axis=0)
+
+    uncertain = (alpha >= 0.08) & (alpha <= 0.9)
+
+    if not np.any(uncertain):
+        return alpha
+
+    colors = rgb[uncertain]
+
+    diff_fg = colors - fg_mean
+    diff_bg = colors - bg_mean
+
+    dist_fg = np.sum(diff_fg * diff_fg, axis=1)
+    dist_bg = np.sum(diff_bg * diff_bg, axis=1)
+
+    closer_fg = dist_fg + 1e-6 < dist_bg * 0.9
+    closer_bg = dist_bg + 1e-6 < dist_fg * 0.9
+
+    alpha_uncertain = alpha[uncertain]
+
+    alpha_uncertain[closer_fg] = np.minimum(
+        1.0, alpha_uncertain[closer_fg] * 1.25 + 0.1
+    )
+    alpha_uncertain[closer_bg] = np.maximum(0.0, alpha_uncertain[closer_bg] * 0.5 - 0.1)
+
+    refined_alpha = alpha.copy()
+    refined_alpha[uncertain] = alpha_uncertain
+
+    return refined_alpha
+
+
+def grabcut_refinement(image_rgb, alpha):
+    rgb = image_rgb.astype(np.uint8)
+    alpha = alpha.astype(np.float32)
+
+    h, w = alpha.shape[:2]
+    if h < 4 or w < 4:
+        return alpha
+
+    mask = np.full((h, w), cv2.GC_PR_BGD, np.uint8)
+
+    sure_fg = alpha > 0.97
+    sure_bg = alpha < 0.03
+
+    mask[sure_fg] = cv2.GC_FGD
+    mask[sure_bg] = cv2.GC_BGD
+
+    if sure_fg.sum() < 50 or sure_bg.sum() < 50:
+        return alpha
+
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
+
+    try:
+        cv2.grabCut(
+            rgb,
+            mask,
+            None,
+            bgd_model,
+            fgd_model,
+            3,
+            cv2.GC_INIT_WITH_MASK,
+        )
+    except Exception:
+        return alpha
+
+    result_mask = np.where(
+        (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1.0, 0.0
+    ).astype(np.float32)
+
+    refined = np.maximum(alpha, result_mask)
+    refined = np.clip(refined, 0.0, 1.0)
+
+    return refined
+
+
+def edge_boundary_refinement(image_rgb, alpha):
+    alpha = alpha.astype(np.float32)
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+
+    edges = cv2.Canny(gray, 60, 140)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return alpha
+
+    alpha_seed = (alpha > 0.3).astype(np.uint8) * 255
+    best_idx = -1
+    best_score = -1
+    best_area = 0
+
+    for i, cnt in enumerate(contours):
+        area = cv2.contourArea(cnt)
+        if area < 400:
+            continue
+        mask = np.zeros_like(alpha_seed)
+        cv2.drawContours(mask, [cnt], -1, 255, cv2.FILLED)
+        overlap = cv2.bitwise_and(mask, alpha_seed)
+        score = overlap.sum()
+        if score > best_score or (score == best_score and area > best_area):
+            best_score = score
+            best_idx = i
+            best_area = area
+
+    if best_idx == -1:
+        return alpha
+
+    boundary_mask = np.zeros_like(alpha_seed)
+    cv2.drawContours(boundary_mask, contours, best_idx, 255, cv2.FILLED)
+    boundary_mask = cv2.dilate(boundary_mask, kernel, iterations=1)
+
+    hard_mask = boundary_mask > 0
+    alpha = alpha * hard_mask.astype(np.float32)
+
+    binary = (alpha > 0.05).astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    if num_labels > 1:
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+        keep = (labels == largest_label).astype(np.float32)
+        alpha = alpha * keep
+
+    return alpha
+
+
+def alpha_boundary_clamp(alpha):
+    alpha = alpha.astype(np.float32)
+    binary = (alpha > 0.08).astype(np.uint8) * 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return alpha
+
+    areas = [cv2.contourArea(c) for c in contours]
+    best_idx = int(np.argmax(areas))
+    hull = cv2.convexHull(contours[best_idx])
+    mask = np.zeros_like(binary)
+    cv2.drawContours(mask, [hull], -1, 255, cv2.FILLED)
+
+    hard_mask = mask > 0
+    return alpha * hard_mask.astype(np.float32)
 
 
 def subpixel_hair_enhancement(alpha_pil):
@@ -381,7 +585,12 @@ def process_with_hybrid_matting(image):
         hair_zone = (alpha > 0.08) & (alpha < 0.9)
         alpha[hair_zone] = np.power(alpha[hair_zone], 0.85)
 
-        # ---- 5️⃣ Remove micro noise only ----
+        alpha = color_consistency_refinement(alpha, rgb)
+        alpha = grabcut_refinement((rgb * 255.0).astype(np.uint8), alpha)
+        alpha = edge_boundary_refinement((rgb * 255.0).astype(np.uint8), alpha)
+        alpha = alpha_boundary_clamp(alpha)
+
+        alpha[alpha < 0.25] = 0.0
         alpha_uint8 = (alpha * 255).astype(np.uint8)
         alpha_uint8 = get_largest_component_mask(alpha_uint8)
 
