@@ -2,7 +2,7 @@
   "loras": [],
   "doras": [],
   "prompt": {
-    "positive": "(single object:1.5) short sword is a game asset",
+    "positive": "fo,chibi illustration painting,full-body,The dark purple robe is embroidered with star track patterns, and the fabric flows with a Milky Way **** glow. Silver white long hair is wrapped in glowing stardust, and three small spinning stars are suspended on the forehead. The pale face was painted with golden star patterns, holding a staff embedded with meteorite fragments. Every time the spell was cast, twisted star ripples would appear in the surrounding space, and a mysterious and powerful aura would surround the body",
     "negative": "blurry"
   },
   "latent": {
